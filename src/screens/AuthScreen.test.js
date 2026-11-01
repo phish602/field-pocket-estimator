@@ -139,7 +139,16 @@ jest.mock("../lib/useSupabaseAccount", () => ({
 
 jest.mock("../lib/useDeviceLockStatus", () => ({
   __esModule: true,
-  default: () => ({ loading: false, ready: true, isLocked: false, isActive: true }),
+  // An active device also owns a lease GENERATION; the handoff gate requires it.
+  default: () => ({
+    loading: false,
+    ready: true,
+    isLocked: false,
+    isActive: true,
+    localDeviceId: "test_device_1",
+    activeDeviceState: { activeDeviceId: "test_device_1", lockVersion: 1 },
+    fence: { companyId: "company_1", deviceId: "test_device_1", lockVersion: 1 },
+  }),
 }));
 
 jest.mock("../lib/useCloudAutoBackup", () => ({ __esModule: true, default: () => null }));

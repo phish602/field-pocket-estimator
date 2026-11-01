@@ -28,16 +28,18 @@ import {
   scanLocalDataIntegrity,
   repairStoredLocalDataIntegrity,
 } from "./localDataIntegrity";
-import {
-  runSupabaseCloudOnboardingBackup,
-  CLOUD_ONBOARDING_STATUS,
-} from "./supabaseCloudOnboarding";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
+import {
+  appendCloudMutationsDurably,
+  CLOUD_MUTATION_ENTITY,
+  CLOUD_MUTATION_OPERATION,
+} from "./cloudMutationLedger";
 import {
   clearCloudPartialRecoveryStatus,
   writeCloudPartialRecoveryStatus,
 } from "./cloudPartialRecoveryStatus";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
+import { ensureCurrentDeviceCanWriteCloud, ensureDeviceFenceStillCurrent } from "./supabaseDeviceLock";
 
 export const SAFE_CLOUD_RECOVERY_STATUS = {
   SIGNED_OUT: "signed_out",
@@ -224,6 +226,52 @@ function firstIntegrityBlocker(integrity) {
   return blockers[0] || null;
 }
 
+function buildRecoveryRepairMutations(storage, repairs, companyId) {
+  const repairedEstimateIds = new Set([
+    ...(Array.isArray(repairs?.estimateNumbers) ? repairs.estimateNumbers : []),
+    ...(Array.isArray(repairs?.staleEstimateProjectIds) ? repairs.staleEstimateProjectIds : []),
+  ].map((repair) => String(repair?.estimateId || repair?.id || "").trim()).filter(Boolean));
+  const repairedInvoiceIds = new Set([
+    ...(Array.isArray(repairs?.staleInvoiceSourceEstimateIds) ? repairs.staleInvoiceSourceEstimateIds : []),
+    ...(Array.isArray(repairs?.staleInvoiceProjectIds) ? repairs.staleInvoiceProjectIds : []),
+  ].map((repair) => String(repair?.invoiceId || repair?.id || "").trim()).filter(Boolean));
+  if (!repairedEstimateIds.size && !repairedInvoiceIds.size) return [];
+  const snapshot = buildLocalSnapshotFromStorage(storage)?.snapshot || {};
+  const mutations = [];
+  (Array.isArray(snapshot.estimates) ? snapshot.estimates : []).forEach((estimate) => {
+    const documentId = String(estimate?.id || "").trim();
+    if (!repairedEstimateIds.has(documentId)) return;
+    mutations.push({
+      companyId,
+      entityType: CLOUD_MUTATION_ENTITY.ESTIMATE,
+      documentId,
+      operation: CLOUD_MUTATION_OPERATION.UPSERT,
+      reason: "safe_recovery_metadata_repair",
+      source: "runRecoveryContinuation",
+      payload: estimate,
+    });
+    repairedEstimateIds.delete(documentId);
+  });
+  (Array.isArray(snapshot.invoices) ? snapshot.invoices : []).forEach((invoice) => {
+    const documentId = String(invoice?.id || "").trim();
+    if (!repairedInvoiceIds.has(documentId)) return;
+    mutations.push({
+      companyId,
+      entityType: CLOUD_MUTATION_ENTITY.INVOICE,
+      documentId,
+      operation: CLOUD_MUTATION_OPERATION.UPSERT,
+      reason: "safe_recovery_metadata_repair",
+      source: "runRecoveryContinuation",
+      payload: invoice,
+    });
+    repairedInvoiceIds.delete(documentId);
+  });
+  if (repairedEstimateIds.size || repairedInvoiceIds.size) {
+    throw new Error("recovery_repair_target_missing");
+  }
+  return mutations;
+}
+
 // After a partial safe recovery, the cloud legitimately keeps rows this
 // device could not take: the skipped (payload-less) estimates and their
 // line items. A backup verification that mismatches ONLY in that exact way
@@ -251,12 +299,10 @@ function isSkippedEstimateOnlyMismatch(verification, skippedEstimates) {
 
 /**
  * Runs the post-recovery pipeline: integrity -> safe repair -> integrity ->
- * strict cloud verification for a full cloud-origin recovery, or the existing
- * backup continuation for the special partial-recovery case -> plain-language
- * result.
- * Backup itself re-validates through the existing safe onboarding path, so
- * this can never bypass the writer's own checks. onPhase (optional) receives
- * "checking" | "repairing" | "backing_up" for UI progress.
+ * strict cloud verification for a cloud-origin recovery. Any safe metadata
+ * repair is captured as exact-target ledger work; unchanged recovered rows are
+ * never sent back through the whole-workspace writer. onPhase (optional)
+ * receives "checking" | "repairing" | "backing_up" for UI progress.
  */
 export async function runRecoveryContinuation({
   configured = false,
@@ -330,16 +376,98 @@ export async function runRecoveryContinuation({
     };
   }
 
+  if (repairChanged) {
+    let repairMutations = [];
+    try {
+      repairMutations = buildRecoveryRepairMutations(storage, repairs, String(company?.id || "").trim());
+      if (!repairMutations.length) throw new Error("recovery_repair_target_missing");
+      await appendCloudMutationsDurably(repairMutations, { storage });
+    } catch (error) {
+      return {
+        status: RECOVERY_CONTINUATION_STATUS.PAUSED,
+        backupRan: false,
+        repairChanged,
+        repairs,
+        skippedEstimates,
+        pausedReason: "Recovered data needs verification before cloud sync can resume.",
+        pausedReasonCode: "recovery_repair_materialization_failed",
+        technicalDetail: String(error?.message || "Exact repaired records could not be queued."),
+      };
+    }
+    return {
+      status: RECOVERY_CONTINUATION_STATUS.PAUSED,
+      backupRan: false,
+      repairChanged,
+      repairs,
+      skippedEstimates,
+      queuedMutationCount: repairMutations.length,
+      pausedReason: "Recovered data is saved and its repaired records are finishing cloud verification.",
+      pausedReasonCode: "recovery_targeted_sync_pending",
+    };
+  }
+
   // A complete recovery copied the authoritative cloud snapshot onto an empty
   // device. It is not a new local mutation and must never immediately write
   // the same records back to cloud. Verify first; normal convergence resumes
   // after this settled result, while partial recovery keeps its existing
   // backup-protection continuation below.
   if (Number(skippedEstimates) <= 0) {
+    // This branch acknowledges the queue itself, so it owns its own generation.
+    // Captured immutably before the async verification and re-proved before the
+    // clear: A/v5 -> B/v6 -> A/v7 must not clear a generation it no longer owns.
+    const verificationAccess = await ensureCurrentDeviceCanWriteCloud({
+      configured,
+      user,
+      company,
+      storage,
+      reason: "safe_cloud_recovery_verification",
+      claimIfMissing: false,
+    });
+    const verificationStartFence = verificationAccess?.ok
+      ? (verificationAccess?.access?.fence || null)
+      : null;
+    if (!verificationStartFence) {
+      return {
+        status: RECOVERY_CONTINUATION_STATUS.PAUSED,
+        backupRan: false,
+        repairChanged,
+        repairs,
+        skippedEstimates,
+        pausedReason: "Recovered data needs verification before cloud sync can resume.",
+        pausedReasonCode: "recovery_device_not_active",
+        technicalDetail: String(
+          verificationAccess?.userMessage
+            || verificationAccess?.error
+            || "This device could not prove it owns the workspace."
+        ),
+      };
+    }
+
     const verification = await runSupabaseCloudVerification({ storageSnapshot: storage, configured, user, company });
     const warnings = Array.isArray(verification?.notices)
       && verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
     if (verification?.ok && verification?.allMatched && !warnings && !(verification?.availableRepairs?.length)) {
+      const stillCurrent = await ensureDeviceFenceStillCurrent({
+        configured,
+        user,
+        company,
+        storage,
+        fence: verificationStartFence,
+        reason: "restore",
+      });
+      if (!stillCurrent?.ok) {
+        return {
+          status: RECOVERY_CONTINUATION_STATUS.PAUSED,
+          backupRan: false,
+          repairChanged,
+          repairs,
+          skippedEstimates,
+          verification,
+          pausedReason: "Recovered data needs verification before cloud sync can resume.",
+          pausedReasonCode: "recovery_device_generation_changed",
+          technicalDetail: String(stillCurrent?.userMessage || stillCurrent?.error || ""),
+        };
+      }
       clearCloudBackupDirty("safe_cloud_recovery_verified");
       return {
         status: RECOVERY_CONTINUATION_STATUS.VERIFIED,
@@ -363,81 +491,113 @@ export async function runRecoveryContinuation({
   }
 
   notifyPhase("backing_up");
-  let backup = null;
+  // Partial recovery is still cloud-origin data. Verify while explicitly
+  // preserving the proven skipped estimate ids; never rewrite the workspace.
+  const backupAccess = await ensureCurrentDeviceCanWriteCloud({
+    configured,
+    user,
+    company,
+    storage,
+    reason: "safe_recovery_backup",
+    claimIfMissing: false,
+  });
+  const backupStartFence = backupAccess?.ok ? (backupAccess?.access?.fence || null) : null;
+  if (!backupStartFence) {
+    return {
+      status: RECOVERY_CONTINUATION_STATUS.PAUSED,
+      backupRan: false,
+      repairChanged,
+      repairs,
+      skippedEstimates,
+      pausedReason: "Recovered data needs verification before cloud sync can resume.",
+      pausedReasonCode: "recovery_device_not_active",
+      technicalDetail: String(
+        backupAccess?.userMessage
+          || backupAccess?.error
+          || "This device could not prove it owns the workspace."
+      ),
+    };
+  }
+
+  let verification = null;
   try {
-    backup = await runSupabaseCloudOnboardingBackup({
-      storageSnapshot: storage,
-      configured,
-      user,
-      company,
-      role,
+    verification = await runSupabaseCloudVerification({
+      storageSnapshot: storage, configured, user, company,
       preservedSkippedEstimateLegacyIds: skippedEstimateLegacyIds,
     });
   } catch (error) {
     return {
       status: RECOVERY_CONTINUATION_STATUS.ERROR,
-      error: "Backup could not finish. Your recovered data is saved on this device.",
+      error: "Cloud verification could not finish. Your recovered data is saved on this device.",
       technicalDetail: String(error?.message || ""),
-      backupRan: true,
+      backupRan: false,
       repairChanged,
       repairs,
       skippedEstimates,
     };
   }
 
-  if (backup?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED) {
-    return {
-      status: Number(skippedEstimates) > 0
-        ? RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED
-        : RECOVERY_CONTINUATION_STATUS.BACKED_UP,
-      backupRan: true,
-      repairChanged,
-      repairs,
-      skippedEstimates,
-      olderEstimatesKeptInCloud: Boolean(recoveryStatus),
-      recoveryStatus,
-    };
-  }
-
-  if (backup?.writeResult?.ok && isSkippedEstimateOnlyMismatch(backup?.verification, skippedEstimates)) {
-    // Every local record verified in cloud; the only difference is the
-    // skipped estimates the cloud is intentionally keeping. Local changes
-    // are backed up, so the queue is current.
-    clearCloudBackupDirty("safe_recovery_backup_success");
+  const warnings = Array.isArray(verification?.notices)
+    && verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
+  if (verification?.ok && verification?.allMatched && !warnings && !(verification?.availableRepairs?.length)) {
+    const stillCurrent = await ensureDeviceFenceStillCurrent({
+      configured,
+      user,
+      company,
+      storage,
+      fence: backupStartFence,
+      reason: "backup",
+    });
+    if (!stillCurrent?.ok) {
+      return {
+        status: RECOVERY_CONTINUATION_STATUS.PAUSED,
+        backupRan: false,
+        repairChanged,
+        repairs,
+        skippedEstimates,
+        olderEstimatesKeptInCloud: Boolean(recoveryStatus),
+        recoveryStatus,
+        pausedReason: "Recovered data needs verification before cloud sync can resume.",
+        pausedReasonCode: "recovery_device_generation_changed",
+        technicalDetail: String(stillCurrent?.userMessage || stillCurrent?.error || ""),
+      };
+    }
+    clearCloudBackupDirty("safe_recovery_verified_with_preserved_estimates");
     return {
       status: RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED,
-      backupRan: true,
+      backupRan: false,
       repairChanged,
       repairs,
       skippedEstimates,
       olderEstimatesKeptInCloud: Boolean(recoveryStatus),
       recoveryStatus,
+      verification,
     };
   }
 
-  const backupBlocker = backup?.preview?.integrity?.backupReadiness?.firstBlocker
-    || firstIntegrityBlocker(scanStoredIntegrity(storage));
+  const backupBlocker = firstIntegrityBlocker(scanStoredIntegrity(storage));
   if (backupBlocker) {
     return {
       status: RECOVERY_CONTINUATION_STATUS.PAUSED,
-      backupRan: true,
+      backupRan: false,
       repairChanged,
       repairs,
       skippedEstimates,
       pausedReason: describeBackupPauseReason(backupBlocker),
-      pausedReasonCode: String(backupBlocker?.code || backup?.status || "backup_incomplete"),
-      technicalDetail: String(backupBlocker?.message || backup?.error || ""),
+      pausedReasonCode: String(backupBlocker?.code || "verification_incomplete"),
+      technicalDetail: String(backupBlocker?.message || ""),
+      verification,
     };
   }
 
   return {
     status: RECOVERY_CONTINUATION_STATUS.PAUSED,
-    backupRan: true,
+    backupRan: false,
     repairChanged,
     repairs,
     skippedEstimates,
-    pausedReason: "Backup could not finish yet. Your recovered data is saved on this device.",
-    pausedReasonCode: String(backup?.status || "backup_incomplete"),
-    technicalDetail: String(backup?.error || ""),
+    pausedReason: "Cloud verification could not finish yet. Your recovered data is saved on this device.",
+    pausedReasonCode: "recovery_verification_mismatch",
+    verification,
   };
 }

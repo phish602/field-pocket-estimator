@@ -19,6 +19,7 @@ import {
   isVaultRuntimeReady,
   revokeVaultRuntime,
   runtimeClear,
+  runtimeCommitAtomicRecords,
   runtimeGetItem,
   runtimeLogicalKeys,
   runtimeRemoveItem,
@@ -250,6 +251,32 @@ test("set, replace, and remove are durable and survive a fresh hydration", async
   await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
   expect(runtimeGetItem("estipaid-projects-v1")).toBeNull();
   expect(runtimeGetItem("estipaid-customers-v1")).toBe("replaced");
+});
+
+test("an atomic runtime batch publishes every replacement only after one durable catalog commit", async () => {
+  await writeMigratedRecord("estipaid-customers-v1", "old-customer");
+  await writeMigratedRecord("estipaid-projects-v1", "old-project");
+  await sealMigratedWorkspace();
+  await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
+  const before = describeVaultRuntime().catalogRevision;
+  const seen = [];
+  const onChange = (event) => seen.push(event?.detail?.key);
+  window.addEventListener("pe-localstorage", onChange);
+  await runtimeCommitAtomicRecords([
+    { logicalKey: "estipaid-customers-v1", value: "new-customer" },
+    { logicalKey: "estipaid-projects-v1", value: "new-project" },
+    { logicalKey: "estipaid-cloud-backup-queue-v1", value: '{"pending":true,"localMutationRevision":1}' },
+  ]);
+  window.removeEventListener("pe-localstorage", onChange);
+  expect(describeVaultRuntime().catalogRevision).toBe(before + 1);
+  expect(runtimeGetItem("estipaid-customers-v1")).toBe("new-customer");
+  expect(runtimeGetItem("estipaid-projects-v1")).toBe("new-project");
+  expect(runtimeGetItem("estipaid-cloud-backup-queue-v1")).toContain('"localMutationRevision":1');
+  expect(seen).toEqual(expect.arrayContaining(["estipaid-customers-v1", "estipaid-projects-v1", "estipaid-cloud-backup-queue-v1"]));
+  revokeVaultRuntime();
+  await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
+  expect(runtimeGetItem("estipaid-customers-v1")).toBe("new-customer");
+  expect(runtimeGetItem("estipaid-projects-v1")).toBe("new-project");
 });
 
 test("exact UTF-8 bytes survive a durable round trip", async () => {

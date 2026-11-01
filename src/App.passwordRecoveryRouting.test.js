@@ -119,7 +119,9 @@ beforeEach(() => {
     ready: true,
     isLocked: false,
     isActive: true,
-    activeDeviceState: null,
+    localDeviceId: "test_device_1",
+    activeDeviceState: { activeDeviceId: "test_device_1", lockVersion: 1 },
+    fence: { companyId: "company_1", deviceId: "test_device_1", lockVersion: 1 },
   });
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "already_backed_up" });
 });
@@ -254,4 +256,46 @@ test("no session still renders the normal sign-in screen (routing unchanged)", (
   expect(screen.getByLabelText("Email")).toBeInTheDocument();
   expect(screen.getByLabelText("Password")).toBeInTheDocument();
   expect(screen.queryByText("Set A New Password")).not.toBeInTheDocument();
+});
+
+// Localhost regression -- the branded session gate must be a passing state, not
+// a terminal one. Once the auth bootstrap gives up, routing has to fall through
+// to the sign-in screen and nothing else.
+test("an unresolved session still renders the branded checking-your-session gate", () => {
+  useSupabaseAuth.mockReturnValue(
+    buildAuthState({ loading: true, session: null, user: null, userEmail: "" })
+  );
+
+  render(<App />);
+
+  expect(screen.getByText(/checking your session/i)).toBeInTheDocument();
+  expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument();
+});
+
+test("a released session gate with no session falls through to the sign-in screen only", () => {
+  useSupabaseAuth.mockReturnValue(
+    buildAuthState({
+      loading: false,
+      session: null,
+      user: null,
+      userEmail: "",
+      errorMessage: "We could not confirm your sign-in in time. Sign in to continue.",
+    })
+  );
+
+  render(<App />);
+
+  expect(screen.getByLabelText("Email")).toBeInTheDocument();
+  expect(screen.getByLabelText("Password")).toBeInTheDocument();
+  expect(
+    screen.getByText("We could not confirm your sign-in in time. Sign in to continue.")
+  ).toBeInTheDocument();
+  // Fail-closed: no shell, no dashboard menu, no recovery form.
+  expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument();
+  expect(screen.queryByText("Set A New Password")).not.toBeInTheDocument();
+  expect(screen.queryByText(/checking your session/i)).not.toBeInTheDocument();
+  // No account or cloud worker is put to work by a released gate.
+  expect(useCloudAutoConvergence).toHaveBeenCalledWith(
+    expect.objectContaining({ configured: false, user: null, company: null })
+  );
 });

@@ -14,6 +14,7 @@ import { getCloudDataDecision, LOCAL_DATA_DECISION } from "./localDataIntegrity"
 import {
   markCloudBackupDirty,
   clearCloudBackupDirty,
+  markCloudBackupReviewRequired,
   readCloudBackupQueueState,
   applyCloudBackupResultToQueue,
   CLOUD_BACKUP_STATUS,
@@ -180,8 +181,8 @@ describe("a pending local payment revision is not external divergence", () => {
   });
 });
 
-describe("genuine external divergence is still reported", () => {
-  test("a cloud-only payment is a real mismatch even while a local revision is pending", () => {
+describe("genuine external divergence remains internal and surfaces as generic sync attention", () => {
+  test("a cloud-only payment is retained as mismatch evidence without recovery actions", () => {
     const queueState = markPaymentDirty();
 
     const decision = getCloudDataDecision({
@@ -193,8 +194,9 @@ describe("genuine external divergence is still reported", () => {
 
     expect(decision.pendingLocalAheadOnly).toBe(false);
     expect(decision.mismatch).toBe(true);
-    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
-    expect(decision.restoreCloudAvailable).toBe(true);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+    expect(decision.restoreCloudAvailable).toBe(false);
+    expect(decision.replaceCloudAvailable).toBe(false);
   });
 
   test("a mismatch with NO pending queue is still a real mismatch", () => {
@@ -209,18 +211,21 @@ describe("genuine external divergence is still reported", () => {
     // Nothing pending can explain the difference -> genuine divergence.
     expect(decision.pendingLocalAheadOnly).toBe(false);
     expect(decision.mismatch).toBe(true);
-    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
   });
 
   test("a queue in review state is never explained away by a pending local write", () => {
-    const queueState = { ...markPaymentDirty(), status: "remote_changed" };
+    markPaymentDirty();
+    const queueState = markCloudBackupReviewRequired("Cloud changed elsewhere while a payment was pending.");
+    expect(queueState.status).toBe(CLOUD_BACKUP_STATUS.REMOTE_CHANGED);
+    expect(queueState.pending).toBe(true);
     const decision = getCloudDataDecision({
       localIntegrity: cleanLocalIntegrity,
       cloudVerification: localAheadVerification(),
       queueState,
     });
     expect(decision.queueRequiresReview).toBe(true);
-    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
   });
 
   test("a local blocker still outranks a pending local write", () => {

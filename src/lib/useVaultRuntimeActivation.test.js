@@ -7,6 +7,7 @@ import { act, render, waitFor } from "@testing-library/react";
 import useVaultRuntimeActivation, {
   VAULT_ACTIVATION_PLAN_ACTIONS,
   VAULT_ACTIVATION_PLAN_CODES,
+  resetVaultOwnershipValidationForTests,
   resolveVaultActivationPlan,
 } from "./useVaultRuntimeActivation";
 
@@ -52,6 +53,7 @@ jest.mock("./vaultRuntimeStore", () => ({
 }));
 jest.mock("./accountScopedLocalStorage", () => ({
   installAuthoritativeVaultRuntime: jest.fn(() => true),
+  isAuthoritativeVaultRuntimeInstalled: jest.fn(() => true),
   revokeAuthoritativeVaultRuntime: jest.fn(),
 }));
 
@@ -82,6 +84,8 @@ function primeRepository({ catalog = null } = {}) {
 beforeEach(() => {
   latest = undefined;
   leases.length = 0;
+  // One test stands in for one fresh document.
+  resetVaultOwnershipValidationForTests();
   // resetMocks strips factory implementations, so the workspace tag is primed here.
   require("./vaultSession").deriveWorkspaceVaultTag.mockResolvedValue("A".repeat(43));
   policy.getVaultBridgeBuildPolicy.mockReturnValue({ bridgeRelease: false, vaultCreationEnabled: true, migrationEnabled: true });
@@ -107,6 +111,7 @@ beforeEach(() => {
   runtime.subscribeVaultRuntimeRevalidation.mockReturnValue(() => {});
   runtime.getVaultRuntimeStatus.mockReturnValue({ state: "ready", generation: 1, pending: 0, code: "", entryCount: 1 });
   scoped.installAuthoritativeVaultRuntime.mockReturnValue(true);
+  scoped.isAuthoritativeVaultRuntimeInstalled.mockReturnValue(true);
   primeRepository();
 });
 
@@ -232,8 +237,13 @@ test("unmount revokes the runtime", async () => {
   const view = render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
   await waitFor(() => expect(latest.state).toBe("ready"));
   scoped.revokeAuthoritativeVaultRuntime.mockClear();
+  runtime.revokeVaultRuntime.mockClear();
   view.unmount();
+  // Revocation waits only for the current turn to yield, so a same-turn
+  // remount can adopt the verified runtime; a real unmount still revokes.
+  await act(async () => { await Promise.resolve(); });
   expect(scoped.revokeAuthoritativeVaultRuntime).toHaveBeenCalled();
+  expect(runtime.revokeVaultRuntime).toHaveBeenCalled();
 });
 
 test("flushAndLock locks only when every accepted write is durable", async () => {
@@ -301,17 +311,14 @@ test("a pending durable write keeps access ready while reporting durability, the
   expect(latest.pending).toBe(false);
 });
 
-test("another tab committing a newer catalog triggers revalidation", async () => {
-  let revalidate;
-  runtime.subscribeVaultRuntimeRevalidation.mockImplementation((listener) => { revalidate = listener; return () => {}; });
-  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+test("the hook no longer subscribes to steady-state cross-tab freshness revalidation", async () => {
+  // Only one browser surface operates at a time; a freshness message can only
+  // come from a surface that has lost ownership, and the takeover claim is what
+  // gets revalidated. The transport itself stays in vaultRuntimeStore.
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked browserOwnershipToken="claim-1" />);
   await waitFor(() => expect(latest.state).toBe("ready"));
-  expect(typeof revalidate).toBe("function");
-
-  runtime.hydrateVaultRuntime.mockClear();
-  await act(async () => { revalidate(); });
-  // Revalidation re-reads and re-verifies rather than trusting the cache.
-  await waitFor(() => expect(runtime.hydrateVaultRuntime).toHaveBeenCalled());
+  expect(runtime.subscribeVaultRuntimeRevalidation).not.toHaveBeenCalled();
+  expect(typeof runtime.subscribeVaultRuntimeRevalidation).toBe("function");
 });
 
 // ---------------------------------------------------------------------------
@@ -462,10 +469,12 @@ test("a blocked guard blocks without migrating, sealing, or hydrating", async ()
 // and lets revision CAS decide, then re-hydrates in place.
 // ---------------------------------------------------------------------------
 
+// The queue-safe revalidation pass is no longer driven by a cross-tab freshness
+// subscription. Without browser-ownership binding an explicit refresh of the
+// same identity still runs exactly that pass, so it drives these tests.
+// Like the listener it replaces, the signal starts the pass and returns nothing.
 function captureRevalidation() {
-  let listener = null;
-  runtime.subscribeVaultRuntimeRevalidation.mockImplementation((callback) => { listener = callback; return () => {}; });
-  return () => listener;
+  return () => () => { latest.refresh(); };
 }
 
 test("revalidation flushes accepted writes before it replaces the cache", async () => {
@@ -522,7 +531,7 @@ test("a durability failure during the revalidation flush blocks", async () => {
   expect(latest.code).toBe("DURABILITY_FAILED");
 });
 
-test("rapid remote notifications coalesce into at most one extra pass", async () => {
+test("rapid revalidation requests coalesce into at most one extra pass", async () => {
   const revalidation = captureRevalidation();
   render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
   await waitFor(() => expect(latest.state).toBe("ready"));
@@ -760,7 +769,7 @@ test("repeated refresh calls coalesce into one extra pass", async () => {
   expect(hydrations).toBe(2);
 });
 
-test("a refresh during a remote revalidation queues exactly one additional pass", async () => {
+test("a refresh during an in-flight revalidation queues exactly one additional pass", async () => {
   const revalidation = captureRevalidation();
   render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
   await waitFor(() => expect(latest.state).toBe("ready"));
@@ -784,7 +793,7 @@ test("a refresh during a remote revalidation queues exactly one additional pass"
   expect(hydrations).toBe(2);
 });
 
-test("cross-tab commits arriving during a paused hydration are not lost (N+1, N+2, N+3)", async () => {
+test("revalidation requests arriving during a paused hydration are not lost (N+1, N+2, N+3)", async () => {
   const revalidation = captureRevalidation();
   render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
   await waitFor(() => expect(latest.state).toBe("ready"));
@@ -1032,7 +1041,7 @@ test("a second and third refresh while frozen coalesce instead of re-activating"
   expect(latest.state).toBe("ready");
 });
 
-test("a remote signal arriving while frozen also coalesces rather than re-activating", async () => {
+test("a second revalidation request arriving while frozen also coalesces rather than re-activating", async () => {
   const session = installRealFreezeSemantics();
   const revalidation = captureRevalidation();
   render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
@@ -1117,4 +1126,392 @@ test("initial activation claims an activation token and a stale one publishes no
   await act(async () => { await latest.refresh(); });
   expect(latest.state).not.toBe("blocked");
   expect(scoped.installAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+});
+
+// ---------------------------------------------------------------------------
+// Vault readiness bound to the CURRENT browser ownership claim.
+//
+// The verified browser claim token is the ownership version. A runtime verified
+// under the current claim stays continuously ready; a new claim is
+// non-operational until the latest encrypted state is re-verified for it once.
+// ---------------------------------------------------------------------------
+
+describe("browser-ownership-bound readiness", () => {
+  const T1 = "claim-token-1";
+  const T2 = "claim-token-2";
+  const T3 = "claim-token-3";
+  let store;
+  let renders;
+
+  function OwnedProbe(props) {
+    latest = useVaultRuntimeActivation(props);
+    renders.push({ token: props.browserOwnershipToken, state: latest.state, revision: store.revision });
+    return null;
+  }
+
+  // A faithful model of the store's session contract: each successful
+  // hydration installs a NEW generation built from the repository's CURRENT
+  // revision; revocation ends the session; freezing is lease-bound.
+  function installSessionModel() {
+    store = { generation: 0, revision: 0, repositoryRevision: 1, frozen: false, lease: null, revoked: false };
+    runtime.getVaultRuntimeStatus.mockImplementation(() => ({
+      state: store.generation ? "ready" : "idle", generation: store.generation, pending: 0, code: "", entryCount: 1,
+    }));
+    runtime.isVaultRuntimeReadable.mockImplementation((generation) => Boolean(store.generation)
+      && (generation === undefined || generation === store.generation));
+    runtime.isVaultRuntimeReady.mockImplementation((generation) => Boolean(store.generation) && !store.frozen
+      && (generation === undefined || generation === store.generation));
+    runtime.hasVaultRuntimeSession.mockImplementation(() => Boolean(store.generation));
+    runtime.revokeVaultRuntime.mockImplementation(() => { store.generation = 0; store.revision = 0; store.frozen = false; });
+    runtime.freezeVaultRuntimeMutations.mockImplementation(() => {
+      store.frozen = true;
+      store.lease = Object.freeze({});
+      return { frozen: true, generation: store.generation, pending: 0, lease: store.lease };
+    });
+    runtime.unfreezeVaultRuntimeMutations.mockImplementation((lease) => {
+      if (lease !== store.lease) return { frozen: store.frozen, generation: store.generation, stale: true };
+      store.frozen = false;
+      store.lease = null;
+      return { frozen: false, generation: store.generation, stale: false };
+    });
+    runtime.hydrateVaultRuntime.mockImplementation(async () => completeHydration());
+  }
+
+  function completeHydration() {
+    store.generation += 1;
+    store.revision = store.repositoryRevision;
+    store.frozen = false;
+    store.lease = null;
+    return { ok: true, state: "ready", code: "", entryCount: 1, generation: store.generation };
+  }
+
+  function gateHydration() {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    runtime.hydrateVaultRuntime.mockImplementation(async () => { await gate; return completeHydration(); });
+    return () => release();
+  }
+
+  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+  function clearLifecycleMocks() {
+    [runtime.flushVaultRuntime, runtime.freezeVaultRuntimeMutations, runtime.hydrateVaultRuntime,
+      runtime.revokeVaultRuntime, runtime.beginVaultRuntimeActivation, runtime.unfreezeVaultRuntimeMutations,
+      scoped.installAuthoritativeVaultRuntime, scoped.revokeAuthoritativeVaultRuntime,
+      orchestrator.migrateActiveWorkspaceVault, runtime.sealVaultRuntime].forEach((mock) => mock.mockClear());
+  }
+
+  function expectNoVaultLifecycleWork() {
+    expect(runtime.flushVaultRuntime).not.toHaveBeenCalled();
+    expect(runtime.freezeVaultRuntimeMutations).not.toHaveBeenCalled();
+    expect(runtime.hydrateVaultRuntime).not.toHaveBeenCalled();
+    expect(runtime.beginVaultRuntimeActivation).not.toHaveBeenCalled();
+    expect(runtime.revokeVaultRuntime).not.toHaveBeenCalled();
+    expect(scoped.installAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+    expect(scoped.revokeAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+  }
+
+  const props = (token, extra = {}) => ({
+    enabled: true, userId: USER, companyId: COMPANY, vaultUnlocked: true, browserOwnershipToken: token, ...extra,
+  });
+
+  async function renderReady(token = T1) {
+    const view = render(<OwnedProbe {...props(token)} />);
+    await waitFor(() => expect(latest.state).toBe("ready"));
+    await settle();
+    expect(latest.state).toBe("ready");
+    return view;
+  }
+
+  beforeEach(() => {
+    renders = [];
+    store = { revision: 0 };
+    installSessionModel();
+  });
+
+  test("1/19: a healthy same-token owner stays ready; no freshness subscription can freeze it", async () => {
+    const view = await renderReady(T1);
+    clearLifecycleMocks();
+    renders.length = 0;
+
+    // Nothing consumes the cross-tab freshness signal, so there is no listener
+    // a `runtime-committed` message could reach.
+    expect(runtime.subscribeVaultRuntimeRevalidation).not.toHaveBeenCalled();
+    // Same-claim rerenders (what a browser-surface republish produces).
+    view.rerender(<OwnedProbe {...props(T1)} />);
+    view.rerender(<OwnedProbe {...props(T1)} />);
+    await settle();
+
+    expect(renders.every((entry) => entry.state === "ready")).toBe(true);
+    expectNoVaultLifecycleWork();
+  });
+
+  test("2: focus, visibility, and pageshow do nothing to a validated vault", async () => {
+    await renderReady(T1);
+    clearLifecycleMocks();
+    renders.length = 0;
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("pageshow"));
+    });
+    await settle();
+
+    expect(latest.state).toBe("ready");
+    expect(renders.every((entry) => entry.state === "ready")).toBe(true);
+    expectNoVaultLifecycleWork();
+  });
+
+  test("3: a same-token refresh is non-destructive", async () => {
+    await renderReady(T1);
+    clearLifecycleMocks();
+    const generationBefore = store.generation;
+
+    let outcome;
+    await act(async () => { outcome = await latest.refresh(); });
+    expect(outcome.state).toBe("ready");
+    expect(latest.state).toBe("ready");
+    expect(store.generation).toBe(generationBefore);
+    expectNoVaultLifecycleWork();
+  });
+
+  test("ownership loss keeps the verified cache and does not revoke or revalidate", async () => {
+    const view = await renderReady(T1);
+    clearLifecycleMocks();
+    view.rerender(<OwnedProbe {...props("")} />);
+    await settle();
+    // App gates an inactive surface on browser authority; the vault keeps its
+    // last verified cache and does no work at all.
+    expect(latest.state).toBe("ready");
+    expect(store.generation).toBeGreaterThan(0);
+    expectNoVaultLifecycleWork();
+    // An explicit refresh on a surface that does not own EstiPaid re-reads nothing.
+    await act(async () => { await latest.refresh(); });
+    expectNoVaultLifecycleWork();
+  });
+
+  test("4/5: a new claim gates on its first render and reloads the latest encrypted state once", async () => {
+    const view = await renderReady(T1);
+    expect(store.revision).toBe(1);
+    view.rerender(<OwnedProbe {...props("")} />);
+    // Another surface commits while this one is inactive: repository is N+1.
+    store.repositoryRevision = 2;
+    clearLifecycleMocks();
+    const release = gateHydration();
+    renders.length = 0;
+
+    view.rerender(<OwnedProbe {...props(T2)} />);
+    // The VERY FIRST render under T2 is already non-operational.
+    expect(renders[0]).toEqual(expect.objectContaining({ token: T2 }));
+    expect(renders[0].state).not.toBe("ready");
+    await act(async () => { await Promise.resolve(); });
+    // Mid-verification: frozen, hydrating, still on the old revision -- and
+    // never reported ready.
+    expect(runtime.freezeVaultRuntimeMutations).toHaveBeenCalledTimes(1);
+    expect(store.revision).toBe(1);
+    expect(renders.some((entry) => entry.token === T2 && entry.state === "ready")).toBe(false);
+
+    await act(async () => { release(); });
+    await settle();
+
+    expect(latest.state).toBe("ready");
+    expect(store.revision).toBe(2);
+    expect(runtime.flushVaultRuntime).toHaveBeenCalledTimes(1);
+    expect(runtime.hydrateVaultRuntime).toHaveBeenCalledTimes(1);
+    expect(runtime.hydrateVaultRuntime.mock.calls[0][0].lease).toBeTruthy();
+    expect(scoped.installAuthoritativeVaultRuntime).toHaveBeenCalledWith(expect.objectContaining({ generation: store.generation }));
+    // Ready resumed only once the N+1 state was installed.
+    expect(renders.filter((entry) => entry.token === T2 && entry.state === "ready")
+      .every((entry) => entry.revision === 2)).toBe(true);
+    // Nothing was revoked: the takeover reused the in-place revalidation.
+    expect(runtime.revokeVaultRuntime).not.toHaveBeenCalled();
+    expect(runtime.beginVaultRuntimeActivation).not.toHaveBeenCalled();
+
+    // T2 is now validated: a refresh is a no-op.
+    clearLifecycleMocks();
+    await act(async () => { await latest.refresh(); });
+    expectNoVaultLifecycleWork();
+  });
+
+  test("6: repeated rerenders during a takeover coalesce into one verification", async () => {
+    const view = await renderReady(T1);
+    view.rerender(<OwnedProbe {...props("")} />);
+    clearLifecycleMocks();
+    const release = gateHydration();
+
+    view.rerender(<OwnedProbe {...props(T2)} />);
+    await act(async () => { await Promise.resolve(); });
+    view.rerender(<OwnedProbe {...props(T2)} />);
+    view.rerender(<OwnedProbe {...props(T2)} />);
+    await act(async () => { await Promise.resolve(); });
+    view.rerender(<OwnedProbe {...props(T2)} />);
+
+    await act(async () => { release(); });
+    await settle();
+    view.rerender(<OwnedProbe {...props(T2)} />);
+    await settle();
+
+    expect(runtime.hydrateVaultRuntime).toHaveBeenCalledTimes(1);
+    expect(runtime.freezeVaultRuntimeMutations).toHaveBeenCalledTimes(1);
+    expect(latest.state).toBe("ready");
+  });
+
+  test("7: a takeover pass that completes after ownership moved again cannot publish ready for the new claim", async () => {
+    const view = await renderReady(T1);
+    view.rerender(<OwnedProbe {...props("")} />);
+    clearLifecycleMocks();
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    let hydrations = 0;
+    const overlapping = [];
+    let inFlight = 0;
+    runtime.hydrateVaultRuntime.mockImplementation(async () => {
+      hydrations += 1;
+      inFlight += 1;
+      overlapping.push(inFlight);
+      if (hydrations === 1) await gate;
+      inFlight -= 1;
+      return completeHydration();
+    });
+
+    view.rerender(<OwnedProbe {...props(T2)} />);
+    await act(async () => { await Promise.resolve(); });
+    // Ownership moves again (lost, then reclaimed) while T2 is verifying.
+    view.rerender(<OwnedProbe {...props("")} />);
+    view.rerender(<OwnedProbe {...props(T3)} />);
+    renders.length = 0;
+
+    await act(async () => { release(); await Promise.resolve(); });
+    // Whatever the T2 pass completed, T3 is not ready until T3 itself verifies.
+    const t3ReadyBeforeSecondPass = renders.filter((entry) => entry.token === T3 && entry.state === "ready")
+      .some(() => hydrations < 2);
+    expect(t3ReadyBeforeSecondPass).toBe(false);
+    await settle();
+
+    expect(hydrations).toBe(2);
+    expect(Math.max(...overlapping)).toBe(1);
+    expect(latest.state).toBe("ready");
+    // T3 is validated now.
+    clearLifecycleMocks();
+    await act(async () => { await latest.refresh(); });
+    expectNoVaultLifecycleWork();
+  });
+
+  test("8: a same-document hook remount keeps the validated claim and the same runtime", async () => {
+    const view = await renderReady(T1);
+    const generationBefore = store.generation;
+    clearLifecycleMocks();
+
+    view.unmount();
+    renders.length = 0;
+    render(<OwnedProbe {...props(T1)} />);
+    await settle();
+
+    expect(latest.state).toBe("ready");
+    expect(store.generation).toBe(generationBefore);
+    // Adopted: not re-activated, not revalidated, not revoked.
+    expectNoVaultLifecycleWork();
+    expect(renders.filter((entry) => entry.state !== "ready" && entry.state !== "disabled")).toEqual([]);
+  });
+
+  test("9: a fresh document activates normally and validates its claim only after install", async () => {
+    const release = gateHydration();
+    render(<OwnedProbe {...props(T1)} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(latest.state).not.toBe("ready");
+    await act(async () => { release(); });
+    await settle();
+    expect(latest.state).toBe("ready");
+    expect(runtime.beginVaultRuntimeActivation).toHaveBeenCalledTimes(1);
+    expect(runtime.hydrateVaultRuntime).toHaveBeenCalledTimes(1);
+    // Validated by activation itself: no follow-up takeover pass.
+    expect(runtime.freezeVaultRuntimeMutations).not.toHaveBeenCalled();
+  });
+
+  test("9: an adapter installation failure leaves the claim unvalidated and blocked", async () => {
+    scoped.installAuthoritativeVaultRuntime.mockReturnValue(false);
+    const view = render(<OwnedProbe {...props(T1)} />);
+    await waitFor(() => expect(latest.state).toBe("blocked"));
+    expect(latest.code).toBe("ADAPTER_UNAVAILABLE");
+    view.rerender(<OwnedProbe {...props(T1)} />);
+    await settle();
+    expect(latest.state).toBe("blocked");
+    expect(runtime.freezeVaultRuntimeMutations).not.toHaveBeenCalled();
+  });
+
+  test("10: a failed takeover verification fails closed and never retries on its own", async () => {
+    const view = await renderReady(T1);
+    view.rerender(<OwnedProbe {...props("")} />);
+    clearLifecycleMocks();
+    runtime.hydrateVaultRuntime.mockResolvedValue({ ok: false, state: "blocked", code: "RECORD_INVALID", entryCount: 0, generation: 0 });
+
+    view.rerender(<OwnedProbe {...props(T2)} />);
+    await settle();
+
+    expect(latest.state).toBe("blocked");
+    expect(latest.code).toBe("RECORD_INVALID");
+    // The old cache is not operational: the runtime was revoked.
+    expect(runtime.revokeVaultRuntime).toHaveBeenCalled();
+    expect(scoped.revokeAuthoritativeVaultRuntime).toHaveBeenCalled();
+    expect(store.generation).toBe(0);
+    expect(scoped.installAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+
+    // No loop, no stale fallback: later renders under the same claim stay blocked.
+    view.rerender(<OwnedProbe {...props(T2)} />);
+    await settle();
+    expect(latest.state).toBe("blocked");
+    expect(runtime.hydrateVaultRuntime).toHaveBeenCalledTimes(1);
+  });
+
+  test("11: a user change still hard-switches the vault", async () => {
+    const view = await renderReady(T1);
+    clearLifecycleMocks();
+    const release = gateHydration();
+    view.rerender(<OwnedProbe {...props(T1, { userId: NEXT_USER })} />);
+    // Synchronous revocation; the new identity is never ready on A's cache.
+    expect(runtime.revokeVaultRuntime).toHaveBeenCalled();
+    expect(scoped.revokeAuthoritativeVaultRuntime).toHaveBeenCalled();
+    expect(latest.state).not.toBe("ready");
+    await act(async () => { await Promise.resolve(); });
+    expect(latest.state).not.toBe("ready");
+    await act(async () => { release(); });
+    await settle();
+    expect(latest.state).toBe("ready");
+    expect(runtime.beginVaultRuntimeActivation).toHaveBeenCalledTimes(1);
+  });
+
+  test("12: a company change still hard-switches the vault", async () => {
+    const view = await renderReady(T1);
+    clearLifecycleMocks();
+    const release = gateHydration();
+    view.rerender(<OwnedProbe {...props(T1, { companyId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff" })} />);
+    expect(runtime.revokeVaultRuntime).toHaveBeenCalled();
+    expect(latest.state).not.toBe("ready");
+    await act(async () => { release(); });
+    await settle();
+    expect(latest.state).toBe("ready");
+    expect(runtime.beginVaultRuntimeActivation).toHaveBeenCalledTimes(1);
+  });
+
+  test("13: a vault lock still blocks a validated browser owner", async () => {
+    const view = await renderReady(T1);
+    view.rerender(<OwnedProbe {...props(T1, { vaultUnlocked: false })} />);
+    await waitFor(() => expect(latest.state).toBe("disabled"));
+    expect(runtime.revokeVaultRuntime).toHaveBeenCalled();
+    // Unlocking again is a full activation: the old validation died with the runtime.
+    clearLifecycleMocks();
+    view.rerender(<OwnedProbe {...props(T1)} />);
+    await waitFor(() => expect(latest.state).toBe("ready"));
+    expect(runtime.beginVaultRuntimeActivation).toHaveBeenCalledTimes(1);
+  });
+
+  test("13: flushAndLock clears the validated claim with the runtime", async () => {
+    await renderReady(T1);
+    const lock = jest.fn();
+    await act(async () => { await latest.flushAndLock(lock); });
+    expect(lock).toHaveBeenCalled();
+    expect(latest.state).toBe("disabled");
+    expect(store.generation).toBe(0);
+  });
 });

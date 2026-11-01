@@ -20,6 +20,10 @@ jest.mock("./supabaseClient", () => ({
 }));
 
 const useSupabaseAuth = require("./useSupabaseAuth").default;
+const {
+  AUTH_INITIAL_SESSION_TIMEOUT_MS,
+  AUTH_INITIAL_SESSION_TIMEOUT_MESSAGE,
+} = require("./useSupabaseAuth");
 
 function createMockClient({
   session = null,
@@ -1033,5 +1037,418 @@ describe("useSupabaseAuth social provider sign-in", () => {
     expect(result.current.passwordRecoveryReady).toBe(false);
     expect(mock.client.auth.exchangeCodeForSession).toHaveBeenCalledWith("oauth-callback-code");
     expect(window.location.search).toBe("");
+  });
+});
+
+// Localhost regression -- the branded "Checking your session..." gate stayed up
+// forever because nothing bounded the initial auth bootstrap. These prove the
+// gate is finite, that the watchdog only releases the UI, and that a newer auth
+// event always outranks a bootstrap result that settles late.
+describe("useSupabaseAuth initial bootstrap watchdog", () => {
+  const SESSION_A = { user: { id: "user_a", email: "older@example.com" } };
+  const SESSION_B = { user: { id: "user_b", email: "newer@example.com" } };
+  const RECOVERY_SESSION = { user: { id: "user_r", email: "reset@example.com" } };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockIsSupabaseConfigured = true;
+    mockSupabaseEnv = {
+      url: "https://example.supabase.co",
+      anonKey: "sb_publishable_fake_test_key",
+      isConfigured: true,
+      missingKeys: [],
+    };
+    mockGetSupabaseClient.mockReset();
+    mockGetSupabaseClient.mockReturnValue(null);
+    window.history.replaceState({}, "", "/");
+  });
+
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+    window.history.replaceState({}, "", "/");
+  });
+
+  function createDeferred() {
+    const deferred = {};
+    deferred.promise = new Promise((resolve) => {
+      deferred.resolve = resolve;
+    });
+    return deferred;
+  }
+
+  // Fake timers do not fake microtasks, so the promise chain still drains.
+  async function flush() {
+    await act(async () => {
+      for (let i = 0; i < 6; i += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await Promise.resolve();
+      }
+    });
+  }
+
+  function advancePastWatchdog() {
+    act(() => {
+      jest.advanceTimersByTime(AUTH_INITIAL_SESSION_TIMEOUT_MS);
+    });
+  }
+
+  test("a getSession that never resolves cannot hold the session gate open forever", () => {
+    const mock = createMockClient({ session: null });
+    mock.client.auth.getSession = jest.fn(() => new Promise(() => {}));
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+    const removeItemSpy = jest.spyOn(Storage.prototype, "removeItem");
+    const clearStorageSpy = jest.spyOn(Storage.prototype, "clear");
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    expect(result.current.loading).toBe(true);
+
+    act(() => {
+      jest.advanceTimersByTime(AUTH_INITIAL_SESSION_TIMEOUT_MS - 1);
+    });
+    expect(result.current.loading).toBe(true);
+
+    act(() => {
+      jest.advanceTimersByTime(1);
+    });
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.session).toBeNull();
+    expect(result.current.user).toBeNull();
+    expect(result.current.userEmail).toBe("");
+    expect(result.current.errorMessage).toBe(AUTH_INITIAL_SESSION_TIMEOUT_MESSAGE);
+    // The watchdog releases the UI and touches nothing else.
+    expect(mock.client.auth.signOut).not.toHaveBeenCalled();
+    expect(removeItemSpy).not.toHaveBeenCalled();
+    expect(clearStorageSpy).not.toHaveBeenCalled();
+
+    // Once per lifecycle: no interval, no retry storm, no second lookup.
+    act(() => {
+      jest.advanceTimersByTime(AUTH_INITIAL_SESSION_TIMEOUT_MS * 5);
+    });
+    expect(jest.getTimerCount()).toBe(0);
+    expect(mock.client.auth.getSession).toHaveBeenCalledTimes(1);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.session).toBeNull();
+  });
+
+  test("a callback exchange that never resolves releases the gate WITHOUT consuming the callback", () => {
+    const mock = createMockClient({ session: null });
+    mock.client.auth.exchangeCodeForSession = jest.fn(() => new Promise(() => {}));
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+    window.history.pushState({}, "", "/?code=stuck-callback-code");
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    expect(result.current.loading).toBe(true);
+
+    advancePastWatchdog();
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.session).toBeNull();
+    expect(result.current.user).toBeNull();
+    expect(result.current.errorMessage).toBe(AUTH_INITIAL_SESSION_TIMEOUT_MESSAGE);
+    // Elapsed time is not proof the callback was consumed, so it stays intact
+    // and the exchange is still free to finish.
+    expect(window.location.search).toBe("?code=stuck-callback-code");
+    expect(mock.client.auth.getSession).not.toHaveBeenCalled();
+    expect(mock.client.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  test("a getSession that resolves AFTER the watchdog is still accepted", async () => {
+    const deferred = createDeferred();
+    const mock = createMockClient({ session: null });
+    mock.client.auth.getSession = jest.fn(() => deferred.promise);
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    advancePastWatchdog();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.session).toBeNull();
+    expect(result.current.errorMessage).toBe(AUTH_INITIAL_SESSION_TIMEOUT_MESSAGE);
+
+    deferred.resolve({ data: { session: SESSION_B }, error: null });
+    await flush();
+
+    expect(result.current.session).toBe(SESSION_B);
+    expect(result.current.user).toBe(SESSION_B.user);
+    expect(result.current.userEmail).toBe("newer@example.com");
+    expect(result.current.errorMessage).toBe("");
+    expect(result.current.loading).toBe(false);
+    // The original call was never restarted.
+    expect(mock.client.auth.getSession).toHaveBeenCalledTimes(1);
+  });
+
+  test("a callback exchange that resolves AFTER the watchdog is accepted and only then cleans the URL", async () => {
+    const deferred = createDeferred();
+    const mock = createMockClient({ session: SESSION_B });
+    mock.client.auth.exchangeCodeForSession = jest.fn(() => deferred.promise);
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+    window.history.pushState({}, "", "/?code=slow-callback-code&type=magiclink");
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    advancePastWatchdog();
+    expect(result.current.loading).toBe(false);
+    expect(window.location.search).toContain("slow-callback-code");
+
+    deferred.resolve({ data: { session: SESSION_B }, error: null });
+    await flush();
+
+    expect(result.current.session).toBe(SESSION_B);
+    expect(result.current.userEmail).toBe("newer@example.com");
+    expect(result.current.errorMessage).toBe("");
+    expect(result.current.loading).toBe(false);
+    // Cleanup happens now, under the existing terminal-processing owner.
+    expect(window.location.search).toBe("");
+  });
+
+  test("an auth event AFTER the watchdog is accepted with no reload", () => {
+    const mock = createMockClient({ session: null });
+    mock.client.auth.getSession = jest.fn(() => new Promise(() => {}));
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    advancePastWatchdog();
+    expect(result.current.errorMessage).toBe(AUTH_INITIAL_SESSION_TIMEOUT_MESSAGE);
+
+    act(() => {
+      mock.emitAuthStateChange("SIGNED_IN", SESSION_B);
+    });
+
+    expect(result.current.session).toBe(SESSION_B);
+    expect(result.current.user).toBe(SESSION_B.user);
+    expect(result.current.userEmail).toBe("newer@example.com");
+    expect(result.current.errorMessage).toBe("");
+    expect(result.current.loading).toBe(false);
+  });
+
+  test("SIGNED_IN before the watchdog neutralizes it and outranks a stale NULL bootstrap", async () => {
+    const deferred = createDeferred();
+    const mock = createMockClient({ session: null });
+    mock.client.auth.getSession = jest.fn(() => deferred.promise);
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    act(() => {
+      mock.emitAuthStateChange("SIGNED_IN", SESSION_B);
+    });
+
+    expect(result.current.session).toBe(SESSION_B);
+    expect(result.current.loading).toBe(false);
+
+    // Watchdog neutralized: no timeout state can appear afterwards.
+    act(() => {
+      jest.advanceTimersByTime(AUTH_INITIAL_SESSION_TIMEOUT_MS * 2);
+    });
+    expect(result.current.errorMessage).toBe("");
+    expect(result.current.session).toBe(SESSION_B);
+
+    deferred.resolve({ data: { session: null }, error: null });
+    await flush();
+
+    expect(result.current.session).toBe(SESSION_B);
+    expect(result.current.user).toBe(SESSION_B.user);
+    expect(result.current.userEmail).toBe("newer@example.com");
+    expect(result.current.loading).toBe(false);
+  });
+
+  test("SIGNED_IN outranks a stale bootstrap that returns an OLDER session", async () => {
+    const deferred = createDeferred();
+    const mock = createMockClient({ session: null });
+    mock.client.auth.getSession = jest.fn(() => deferred.promise);
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    act(() => {
+      mock.emitAuthStateChange("SIGNED_IN", SESSION_B);
+    });
+
+    deferred.resolve({ data: { session: SESSION_A }, error: null });
+    await flush();
+
+    expect(result.current.session).toBe(SESSION_B);
+    expect(result.current.userEmail).toBe("newer@example.com");
+    expect(result.current.loading).toBe(false);
+  });
+
+  test("SIGNED_OUT outranks a stale bootstrap and is never silently re-authenticated", async () => {
+    const deferred = createDeferred();
+    const mock = createMockClient({ session: null });
+    mock.client.auth.getSession = jest.fn(() => deferred.promise);
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    act(() => {
+      mock.emitAuthStateChange("SIGNED_OUT", null);
+    });
+
+    expect(result.current.session).toBeNull();
+    expect(result.current.loading).toBe(false);
+
+    // The old lookup finally returns the session that was valid when it started.
+    deferred.resolve({ data: { session: SESSION_A }, error: null });
+    await flush();
+
+    expect(result.current.session).toBeNull();
+    expect(result.current.user).toBeNull();
+    expect(result.current.userEmail).toBe("");
+    expect(result.current.loading).toBe(false);
+  });
+
+  test("INITIAL_SESSION outranks a stale bootstrap result", async () => {
+    const deferred = createDeferred();
+    const mock = createMockClient({ session: null });
+    mock.client.auth.getSession = jest.fn(() => deferred.promise);
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    act(() => {
+      mock.emitAuthStateChange("INITIAL_SESSION", SESSION_B);
+    });
+
+    expect(result.current.session).toBe(SESSION_B);
+    expect(result.current.loading).toBe(false);
+
+    deferred.resolve({ data: { session: SESSION_A }, error: null });
+    await flush();
+
+    expect(result.current.session).toBe(SESSION_B);
+    expect(result.current.loading).toBe(false);
+
+    // The watchdog can no longer manufacture timeout state either.
+    act(() => {
+      jest.advanceTimersByTime(AUTH_INITIAL_SESSION_TIMEOUT_MS * 2);
+    });
+    expect(result.current.errorMessage).toBe("");
+    expect(result.current.session).toBe(SESSION_B);
+  });
+
+  test("PASSWORD_RECOVERY outranks a stale bootstrap and keeps the recovery gate closed", async () => {
+    const deferred = createDeferred();
+    const mock = createMockClient({ session: null });
+    mock.client.auth.getSession = jest.fn(() => deferred.promise);
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+    window.history.pushState({}, "", "/?type=recovery");
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    expect(result.current.passwordRecoveryPending).toBe(true);
+
+    act(() => {
+      mock.emitAuthStateChange("PASSWORD_RECOVERY", RECOVERY_SESSION);
+    });
+
+    expect(result.current.passwordRecoveryPending).toBe(true);
+    expect(result.current.passwordRecoveryReady).toBe(true);
+    expect(result.current.session).toBe(RECOVERY_SESSION);
+
+    // The stale bootstrap must not be able to erase or bypass recovery.
+    deferred.resolve({ data: { session: null }, error: null });
+    await flush();
+
+    expect(result.current.passwordRecoveryPending).toBe(true);
+    expect(result.current.passwordRecoveryReady).toBe(true);
+    expect(result.current.passwordRecoveryComplete).toBe(false);
+    expect(result.current.session).toBe(RECOVERY_SESSION);
+    expect(result.current.loading).toBe(false);
+  });
+
+  test("a listener that fails to register cannot crash the effect or hold the gate open", () => {
+    const mock = createMockClient({ session: null });
+    mock.client.auth.onAuthStateChange = jest.fn(() => {
+      throw new Error("Auth listener unavailable");
+    });
+    mock.client.auth.getSession = jest.fn(() => new Promise(() => {}));
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    expect(result.current.loading).toBe(true);
+
+    advancePastWatchdog();
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.session).toBeNull();
+    expect(result.current.errorMessage).toBeTruthy();
+    expect(mock.client.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  test("a listener that fails to register still allows a real session to be accepted", async () => {
+    const mock = createMockClient({ session: SESSION_B });
+    mock.client.auth.onAuthStateChange = jest.fn(() => {
+      throw new Error("Auth listener unavailable");
+    });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    await flush();
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.session).toBe(SESSION_B);
+    expect(result.current.userEmail).toBe("newer@example.com");
+    expect(mock.client.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  test("unmounting clears the watchdog, unsubscribes, and ignores every later result", async () => {
+    const deferred = createDeferred();
+    const mock = createMockClient({ session: null });
+    mock.client.auth.getSession = jest.fn(() => deferred.promise);
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    const { unmount } = renderHook(() => useSupabaseAuth());
+    unmount();
+
+    expect(mock.subscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+
+    act(() => {
+      jest.advanceTimersByTime(AUTH_INITIAL_SESSION_TIMEOUT_MS * 2);
+    });
+    deferred.resolve({ data: { session: SESSION_B }, error: null });
+    await flush();
+
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  test("a normal persisted session resolves exactly as before and never sees the watchdog", async () => {
+    const mock = createMockClient({ session: SESSION_B });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    await flush();
+
+    expect(mock.client.auth.getSession).toHaveBeenCalledTimes(1);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.session).toBe(SESSION_B);
+    expect(result.current.user).toBe(SESSION_B.user);
+    expect(result.current.userEmail).toBe("newer@example.com");
+    expect(result.current.errorMessage).toBe("");
+
+    act(() => {
+      jest.advanceTimersByTime(AUTH_INITIAL_SESSION_TIMEOUT_MS * 2);
+    });
+    expect(result.current.errorMessage).toBe("");
+    expect(result.current.session).toBe(SESSION_B);
+  });
+
+  test("a normal signed-out lookup resolves exactly as before and never sees the watchdog", async () => {
+    const mock = createMockClient({ session: null });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    await flush();
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.session).toBeNull();
+    expect(result.current.errorMessage).toBe("");
+
+    act(() => {
+      jest.advanceTimersByTime(AUTH_INITIAL_SESSION_TIMEOUT_MS * 2);
+    });
+    expect(result.current.errorMessage).toBe("");
+    expect(result.current.loading).toBe(false);
   });
 });

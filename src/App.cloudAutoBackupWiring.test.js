@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import App from "./App";
-import { buildUnlockedVaultSessionResult, waitForConfiguredWorkspaceShell } from "./testUtils/configuredWorkspaceTestHarness";
+import { buildUnlockedVaultSessionResult, ensureTestAuthoritativeRuntime, waitForConfiguredWorkspaceShell } from "./testUtils/configuredWorkspaceTestHarness";
 
 jest.mock("./lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -94,6 +94,9 @@ function buildAccountState(overrides = {}) {
 
 beforeEach(() => {
   localStorage.clear();
+  // The shell now requires the AUTHORITATIVE adapter to actually be installed,
+  // not merely the runtime hook reporting ready -- install it as production does.
+  ensureTestAuthoritativeRuntime();
   useSupabaseAccount.mockReturnValue(buildAccountState());
   useCloudAutoBackup.mockReturnValue({ running: false });
   useDeviceLockStatus.mockReturnValue({
@@ -101,7 +104,9 @@ beforeEach(() => {
     ready: true,
     isLocked: false,
     isActive: true,
-    activeDeviceState: null,
+    localDeviceId: "test_device_1",
+    activeDeviceState: { activeDeviceId: "test_device_1", lockVersion: 1 },
+    fence: { companyId: "company_1", deviceId: "test_device_1", lockVersion: 1 },
   });
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "already_backed_up" });
 });
@@ -131,7 +136,7 @@ test("worker is disabled when Supabase is not configured, regardless of session"
 });
 
 test("worker is enabled only once signed in and Supabase is configured, using account company/role", async () => {
-  useVaultRuntimeActivation.mockReturnValue({ state: "ready", checking: false, pending: false, code: "", message: "", refresh: jest.fn(), flushAndLock: jest.fn(async () => ({ ok: true, code: "" })) });
+  useVaultRuntimeActivation.mockImplementation(() => { ensureTestAuthoritativeRuntime(); return { state: "ready", checking: false, pending: false, code: "", message: "", refresh: jest.fn(), flushAndLock: jest.fn(async () => ({ ok: true, code: "" })) }; });
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   const user = { id: "user_1", email: "owner@example.com" };
   useSupabaseAuth.mockReturnValue(buildAuthState({
@@ -166,7 +171,7 @@ test("worker is enabled only once signed in and Supabase is configured, using ac
 });
 
 test("worker is disabled when the signed-in device is locked", async () => {
-  useVaultRuntimeActivation.mockReturnValue({ state: "ready", checking: false, pending: false, code: "", message: "", refresh: jest.fn(), flushAndLock: jest.fn(async () => ({ ok: true, code: "" })) });
+  useVaultRuntimeActivation.mockImplementation(() => { ensureTestAuthoritativeRuntime(); return { state: "ready", checking: false, pending: false, code: "", message: "", refresh: jest.fn(), flushAndLock: jest.fn(async () => ({ ok: true, code: "" })) }; });
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   const user = { id: "user_1", email: "owner@example.com" };
   useSupabaseAuth.mockReturnValue(buildAuthState({
@@ -194,6 +199,7 @@ test("worker is disabled when the signed-in device is locked", async () => {
 
   render(<App />);
   await waitForConfiguredWorkspaceShell();
+  expect(await screen.findByText("This Device Is Locked")).toBeInTheDocument();
 
   expect(useCloudAutoBackup).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -201,5 +207,4 @@ test("worker is disabled when the signed-in device is locked", async () => {
       deviceLocked: true,
     })
   );
-  expect(screen.getByText("This Device Is Locked")).toBeInTheDocument();
 });

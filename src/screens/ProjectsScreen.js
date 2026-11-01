@@ -2,6 +2,7 @@
 /* eslint-disable */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { useLanguage } from "../lib/i18n";
 import {
   readStoredProjects,
   buildNormalizedProjectView,
@@ -48,17 +49,17 @@ function formatMoney(value) {
   }
 }
 
-function formatRelativeDate(ts) {
+function formatRelativeDate(ts, t, lang) {
   if (!ts) return "";
   const d = new Date(ts);
   if (isNaN(d.getTime())) return "";
   const now = Date.now();
   const diff = now - d.getTime();
-  if (diff < 86400000) return "Today";
-  if (diff < 172800000) return "Yesterday";
-  if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
+  if (diff < 86400000) return t("common.today");
+  if (diff < 172800000) return t("common.yesterday");
+  if (diff < 604800000) return t("projects.daysAgo", { count: Math.floor(diff / 86400000) });
   try {
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: d.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined });
+    return d.toLocaleDateString(lang === "es" ? "es" : undefined, { month: "short", day: "numeric", year: d.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined });
   } catch {
     return "";
   }
@@ -79,59 +80,60 @@ function deriveProjectColorLane(proj) {
   return "standard";
 }
 
+// Returns a dictionary key, not copy: the caller renders it with the shared t().
 function deriveProjectNextAction(proj) {
   if ((proj?.overdueCount || 0) > 0) {
     return {
-      label: "Resolve Overdue",
+      labelKey: "projects.actionResolveOverdue",
       tone: "danger",
     };
   }
   if ((proj?.totals?.balanceRemaining || 0) > 0) {
     return {
-      label: "Collect Balance",
+      labelKey: "projects.actionCollectBalance",
       tone: "warning",
     };
   }
   if ((proj?.approvedEstCount || 0) > 0) {
     return {
-      label: "Ready to Invoice",
+      labelKey: "projects.actionReadyToInvoice",
       tone: "success",
     };
   }
   if (String(proj?.status || "").toLowerCase() === "estimating") {
     return {
-      label: "Follow Up",
+      labelKey: "projects.actionFollowUp",
       tone: "info",
     };
   }
   if (String(proj?.status || "").toLowerCase() === "completed") {
     return {
-      label: "Review Closeout",
+      labelKey: "projects.actionReviewCloseout",
       tone: "neutral",
     };
   }
   return {
-    label: "View Project",
+    labelKey: "projects.actionViewProject",
     tone: "info",
   };
 }
 
 const FILTER_CHIPS = [
-  { key: "all", label: "All" },
-  { key: "draft", label: "Draft" },
-  { key: "estimating", label: "Estimating" },
-  { key: "active", label: "Active" },
-  { key: "completed", label: "Completed" },
-  { key: "archived", label: "Archived" },
+  { key: "all", labelKey: "projects.filterAll" },
+  { key: "draft", labelKey: "projects.statusDraft" },
+  { key: "estimating", labelKey: "projects.statusEstimating" },
+  { key: "active", labelKey: "projects.statusActive" },
+  { key: "completed", labelKey: "projects.statusCompleted" },
+  { key: "archived", labelKey: "projects.statusArchived" },
 ];
 const CHIP_ACTIVE_ALL = { bg: "rgba(99,179,237,0.12)", border: "rgba(99,179,237,0.28)", color: "rgba(99,179,237,0.9)" };
 
-const STATUS_LABELS = {
-  draft: "Draft",
-  estimating: "Estimating",
-  active: "Active",
-  completed: "Completed",
-  archived: "Archived",
+const STATUS_LABEL_KEYS = {
+  draft: "projects.statusDraft",
+  estimating: "projects.statusEstimating",
+  active: "projects.statusActive",
+  completed: "projects.statusCompleted",
+  archived: "projects.statusArchived",
 };
 const STATUS_COLORS = {
   draft: { bg: "rgba(230,241,248,0.06)", border: "rgba(230,241,248,0.14)", color: "rgba(230,241,248,0.5)" },
@@ -142,11 +144,11 @@ const STATUS_COLORS = {
 };
 
 const COLOR_LANES = [
-  { key: "all",      label: "All colors",     swatch: "rgba(99,179,237,0.72)" },
-  { key: "overdue",  label: "Overdue",        swatch: "rgba(248,113,113,0.88)" },
-  { key: "balance",  label: "Balance due",    swatch: "rgba(251,191,36,0.88)" },
-  { key: "approved", label: "Ready to invoice", swatch: "rgba(74,222,128,0.88)" },
-  { key: "standard", label: "Standard",       swatch: "rgba(148,163,184,0.55)" },
+  { key: "all",      labelKey: "projects.laneAllColors",     swatch: "rgba(99,179,237,0.72)" },
+  { key: "overdue",  labelKey: "projects.laneOverdue",       swatch: "rgba(248,113,113,0.88)" },
+  { key: "balance",  labelKey: "projects.laneBalanceDue",    swatch: "rgba(251,191,36,0.88)" },
+  { key: "approved", labelKey: "projects.laneReadyToInvoice", swatch: "rgba(74,222,128,0.88)" },
+  { key: "standard", labelKey: "projects.laneStandard",      swatch: "rgba(148,163,184,0.55)" },
 ];
 
 const S = {
@@ -270,6 +272,8 @@ export default function ProjectsScreen({
   snapshotReturn = null,
   onReturnToSnapshot,
 }) {
+  // Language and copy come from the app's one owner.
+  const { lang, t } = useLanguage();
   const [q, setQ] = useState("");
   const [activeFilter, setActiveFilter] = useState("all");
   const [activeColorLane, setActiveColorLane] = useState("all");
@@ -366,6 +370,7 @@ export default function ProjectsScreen({
         siteAddress: proj.siteAddress || "",
         status: displayStatus.key,
         statusLabel: displayStatus.label,
+        statusLabelKey: displayStatus.labelKey,
         displayStatus,
         latestActivityAt: view.latestActivityAt || 0,
         totals: view.totals,
@@ -477,9 +482,9 @@ export default function ProjectsScreen({
     return (
       <div className="pe-card" style={{ padding: 0 }}>
         <div style={S.emptyWrap}>
-          <div style={S.emptyTitle}>No projects yet</div>
+          <div style={S.emptyTitle}>{t("projects.noProjectsYet")}</div>
           <div style={S.emptyDesc}>
-            Projects are created automatically when you build estimates or invoices with customer and job details.
+            {t("projects.emptyHelp")}
           </div>
         </div>
       </div>
@@ -490,22 +495,28 @@ export default function ProjectsScreen({
     <div style={S.container}>
       <SnapshotReturnBar snapshotReturn={snapshotReturn} onReturnToSnapshot={onReturnToSnapshot} />
       <div style={S.header}>
-        <div style={S.title}>Projects</div>
-        <div style={S.countBadge}>{chipCounts.all} project{chipCounts.all !== 1 ? "s" : ""}</div>
+        <div style={S.title}>{t("projects.title")}</div>
+        <div style={S.countBadge}>
+          {t(chipCounts.all === 1 ? "projects.countOne" : "projects.countOther", { count: chipCounts.all })}
+        </div>
       </div>
 
       <div style={S.portfolioHero}>
         <div style={{ display: "grid", gap: 6 }}>
           <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
-            Portfolio overview
+            {t("projects.portfolioOverview")}
           </div>
           <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
-            Projects prioritized by what needs attention next
+            {t("projects.prioritizedHeadline")}
           </div>
           <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
             {portfolioSummary.highestBalanceProject && Number(portfolioSummary.highestBalanceProject?.totals?.balanceRemaining || 0) > 0
-              ? `${portfolioSummary.highestBalanceProject.projectName || "This project"} carries the highest visible balance due at ${formatMoney(portfolioSummary.highestBalanceProject.totals.balanceRemaining)}.`
-              : "Open any project to view estimates, invoices, and full job details."}
+              ? t("projects.highestBalanceSummary", {
+                  // The project name is business data: rendered as entered.
+                  name: portfolioSummary.highestBalanceProject.projectName || t("projects.thisProjectFallback"),
+                  amount: formatMoney(portfolioSummary.highestBalanceProject.totals.balanceRemaining),
+                })
+              : t("projects.openAnyProjectHelp")}
           </div>
         </div>
 
@@ -513,33 +524,38 @@ export default function ProjectsScreen({
           {[
             {
               key: "active",
-              label: "Active jobs",
+              label: t("projects.statActiveJobs"),
               value: String(portfolioSummary.activeProjects),
-              detail: `${filtered.length} visible`,
+              detail: t("projects.statVisibleCount", { count: filtered.length }),
               color: "rgba(74,222,128,0.84)",
               border: "rgba(34,197,94,0.18)",
             },
             {
               key: "balance",
-              label: "Balance due",
+              label: t("projects.statBalanceDue"),
               value: formatMoney(portfolioSummary.balanceDue),
-              detail: portfolioSummary.balanceDue > 0 ? "Across visible projects" : "No balance due in view",
+              detail: portfolioSummary.balanceDue > 0 ? t("projects.statAcrossVisible") : t("projects.statNoBalanceInView"),
               color: portfolioSummary.balanceDue > 0 ? "rgba(251,191,36,0.88)" : "rgba(203,213,225,0.78)",
               border: portfolioSummary.balanceDue > 0 ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.1)",
             },
             {
               key: "overdue",
-              label: "Overdue invoices",
+              label: t("projects.statOverdueInvoices"),
               value: String(portfolioSummary.overdueInvoices),
-              detail: portfolioSummary.overdueProjects > 0 ? `${portfolioSummary.overdueProjects} project${portfolioSummary.overdueProjects !== 1 ? "s" : ""}` : "No overdue invoices in view",
+              detail: portfolioSummary.overdueProjects > 0
+                ? t(
+                    portfolioSummary.overdueProjects === 1 ? "projects.statOverdueProjectsOne" : "projects.statOverdueProjectsOther",
+                    { count: portfolioSummary.overdueProjects }
+                  )
+                : t("projects.statNoOverdueInView"),
               color: portfolioSummary.overdueInvoices > 0 ? "rgba(248,113,113,0.88)" : "rgba(203,213,225,0.78)",
               border: portfolioSummary.overdueInvoices > 0 ? "rgba(239,68,68,0.2)" : "rgba(255,255,255,0.1)",
             },
             {
               key: "approved",
-              label: "Ready to invoice",
+              label: t("projects.statReadyToInvoice"),
               value: String(portfolioSummary.approvedReadyProjects),
-              detail: `${portfolioSummary.totalDocuments} docs across visible projects`,
+              detail: t("projects.statDocsAcrossVisible", { count: portfolioSummary.totalDocuments }),
               color: "rgba(96,165,250,0.84)",
               border: "rgba(59,130,246,0.2)",
             },
@@ -551,7 +567,7 @@ export default function ProjectsScreen({
                 type="button"
                 onClick={() => toggleMetricFilter(item.key)}
                 aria-pressed={isActive}
-                aria-label={`${item.label}: ${item.value}. ${isActive ? "Clear filter" : "Filter projects"}`}
+                aria-label={`${item.label}: ${item.value}. ${isActive ? t("projects.clearFilter") : t("projects.filterProjects")}`}
                 style={{
                   ...S.heroStat,
                   border: `1px solid ${isActive ? item.color : item.border}`,
@@ -577,7 +593,7 @@ export default function ProjectsScreen({
       </div>
 
       <div style={S.filterRow}>
-        {FILTER_CHIPS.map(({ key, label }) => {
+        {FILTER_CHIPS.map(({ key, labelKey }) => {
           const isActive = activeFilter === key;
           const count = chipCounts[key] || 0;
           const colorSet = key === "all" ? CHIP_ACTIVE_ALL : (STATUS_COLORS[key] || CHIP_ACTIVE_ALL);
@@ -591,7 +607,7 @@ export default function ProjectsScreen({
               style={chipStyle}
               onClick={() => setActiveFilter(key)}
             >
-              {label}{count > 0 ? ` · ${count}` : ""}
+              {t(labelKey)}{count > 0 ? ` · ${count}` : ""}
             </button>
           );
         })}
@@ -600,18 +616,18 @@ export default function ProjectsScreen({
       {/* Color lane filter + breakdown */}
       <div style={{ display: "grid", gap: 8, padding: "10px 12px 9px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.07)", background: "rgba(255,255,255,0.025)" }}>
         <div style={{ fontSize: 9.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.45)" }}>
-          Color breakdown
+          {t("projects.colorBreakdown")}
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {COLOR_LANES.map(({ key, label, swatch }) => {
+          {COLOR_LANES.map(({ key, labelKey, swatch }) => {
             const isActive = activeColorLane === key;
             const count = key === "all" ? baseFiltered.length : (colorBreakdown.counts[key] || 0);
             const secondary = key === "overdue" && colorBreakdown.totalOverdueInvoices > 0
-              ? `${colorBreakdown.totalOverdueInvoices} inv.`
+              ? t("projects.laneInvAbbrev", { count: colorBreakdown.totalOverdueInvoices })
               : key === "balance" && colorBreakdown.totalBalance > 0
                 ? formatMoney(colorBreakdown.totalBalance)
                 : key === "approved" && colorBreakdown.totalApproved > 0
-                  ? `${colorBreakdown.totalApproved} est.`
+                  ? t("projects.laneEstAbbrev", { count: colorBreakdown.totalApproved })
                   : null;
             return (
               <button
@@ -637,7 +653,7 @@ export default function ProjectsScreen({
                 }}
               >
                 <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: count > 0 ? swatch : "rgba(148,163,184,0.28)", flexShrink: 0 }} />
-                {label}
+                {t(labelKey)}
                 {count > 0 ? <span style={{ opacity: 0.72, fontVariantNumeric: "tabular-nums" }}>{count}</span> : null}
                 {secondary ? <span style={{ opacity: 0.58, fontSize: 10.5 }}>· {secondary}</span> : null}
               </button>
@@ -651,7 +667,7 @@ export default function ProjectsScreen({
           <input
             type="text"
             style={S.searchInput}
-            placeholder="Search projects…"
+            placeholder={t("projects.searchPlaceholder")}
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
@@ -661,12 +677,12 @@ export default function ProjectsScreen({
       {metricFilter ? (
         <div ref={recordsSectionRef} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(180,196,208,0.6)" }}>
-            Showing
+            {t("projects.showing")}
           </span>
           <button
             type="button"
             onClick={() => setMetricFilter("")}
-            aria-label="Clear dashboard filter"
+            aria-label={t("projects.clearDashboardFilter")}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -682,7 +698,7 @@ export default function ProjectsScreen({
               color: "rgba(226,238,250,0.95)",
             }}
           >
-            <span>{drilldownLabel(DRILLDOWN_SCOPES.PROJECTS, metricFilter)}</span>
+            <span>{drilldownLabel(DRILLDOWN_SCOPES.PROJECTS, metricFilter, lang)}</span>
             <span aria-hidden="true" style={{ opacity: 0.75 }}>✕</span>
           </button>
         </div>
@@ -692,8 +708,14 @@ export default function ProjectsScreen({
         <div style={{ ...S.emptyWrap, padding: "24px 16px" }}>
           <div style={S.emptyDesc}>
             {q.trim()
-              ? `No projects match "${q}"`
-              : `No ${FILTER_CHIPS.find((f) => f.key === activeFilter)?.label.toLowerCase() || ""} projects`
+              // The search term is user input and is echoed back untranslated.
+              ? t("projects.noMatchSearch", { query: q })
+              : t("projects.noMatchFilter", {
+                  filter: (() => {
+                    const chip = FILTER_CHIPS.find((f) => f.key === activeFilter);
+                    return chip ? t(chip.labelKey).toLowerCase() : "";
+                  })(),
+                })
             }
           </div>
         </div>
@@ -701,7 +723,7 @@ export default function ProjectsScreen({
         <div style={{ display: "grid", gap: 10 }}>
           {filtered.map((proj) => {
             const statusKey = proj.displayStatus?.key || proj.status || "draft";
-            const statusLabel = proj.displayStatus?.label || STATUS_LABELS[statusKey] || "Draft";
+            const statusLabel = t(STATUS_LABEL_KEYS[statusKey] || "projects.statusDraft");
             const statusStyle = STATUS_COLORS[statusKey] || STATUS_COLORS.draft;
             const nextAction = deriveProjectNextAction(proj);
             const nextActionTone = nextAction.tone === "danger"
@@ -754,7 +776,7 @@ export default function ProjectsScreen({
                 role={onOpenProjectDetail && proj.id ? "button" : undefined}
                 tabIndex={onOpenProjectDetail && proj.id ? 0 : undefined}
                 aria-label={onOpenProjectDetail && proj.id
-                  ? `${proj.projectName || proj.siteAddress || "Untitled Project"}. Open project detail`
+                  ? `${proj.projectName || proj.siteAddress || t("projects.untitledProject")}. ${t("projects.openProjectDetail")}`
                   : undefined}
                 onKeyDown={(event) => {
                   if (!onOpenProjectDetail || !proj.id) return;
@@ -768,7 +790,7 @@ export default function ProjectsScreen({
               >
                 <div style={S.cardTop}>
                   <div style={{ display: "grid", gap: 3, minWidth: 0, flex: 1 }}>
-                    <div style={S.cardName}>{proj.projectName || proj.siteAddress || "Untitled Project"}</div>
+                    <div style={S.cardName}>{proj.projectName || proj.siteAddress || t("projects.untitledProject")}</div>
                     {proj.projectNumber ? (
                       <div style={{ fontSize: 10.5, fontWeight: 600, color: "rgba(230,241,248,0.35)", letterSpacing: "0.04em" }}>#{proj.projectNumber}</div>
                     ) : null}
@@ -782,11 +804,11 @@ export default function ProjectsScreen({
 
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span style={{ padding: "4px 8px", borderRadius: 999, border: `1px solid ${nextActionTone.border}`, background: nextActionTone.background, color: nextActionTone.color, fontSize: 10.5, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                    {nextAction.label}
+                    {t(nextAction.labelKey)}
                   </span>
                   {(proj.totals?.amountPaid || 0) > 0 ? (
                     <span style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(34,197,94,0.18)", background: "rgba(34,197,94,0.06)", color: "rgba(74,222,128,0.86)", fontSize: 10.5, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase" }}>
-                      {formatMoney(proj.totals.amountPaid)} paid
+                      {t("projects.cardPaid", { amount: formatMoney(proj.totals.amountPaid) })}
                     </span>
                   ) : null}
                 </div>
@@ -795,17 +817,17 @@ export default function ProjectsScreen({
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                     {proj.overdueCount > 0 ? (
                       <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.22)", color: "rgba(239,68,68,0.88)", fontSize: 10.5, fontWeight: 700 }}>
-                        {proj.overdueCount === 1 ? "1 overdue" : `${proj.overdueCount} overdue`}
+                        {t(proj.overdueCount === 1 ? "projects.cardOverdueOne" : "projects.cardOverdueOther", { count: proj.overdueCount })}
                       </span>
                     ) : null}
                     {(proj.totals?.balanceRemaining || 0) > 0 ? (
                       <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "rgba(245,158,11,0.84)", fontSize: 10.5, fontWeight: 700 }}>
-                        {formatMoney(proj.totals.balanceRemaining)} due
+                        {t("projects.cardDue", { amount: formatMoney(proj.totals.balanceRemaining) })}
                       </span>
                     ) : null}
                     {proj.approvedEstCount > 0 ? (
                       <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 10.5, fontWeight: 700 }}>
-                        {proj.approvedEstCount === 1 ? "1 est. approved" : `${proj.approvedEstCount} est. approved`}
+                        {t(proj.approvedEstCount === 1 ? "projects.cardEstApprovedOne" : "projects.cardEstApprovedOther", { count: proj.approvedEstCount })}
                       </span>
                     ) : null}
                   </div>
@@ -814,44 +836,44 @@ export default function ProjectsScreen({
                 <div style={S.statsRow}>
                   {proj.totals.estimateCount > 0 ? (
                     <div style={S.statItem}>
-                      <div style={S.statLabel}>Est</div>
+                      <div style={S.statLabel}>{t("projects.cardEst")}</div>
                       <div style={S.statValue}>{proj.totals.estimateCount}</div>
                     </div>
                   ) : null}
                   {proj.totals.invoiceCount > 0 ? (
                     <div style={S.statItem}>
-                      <div style={S.statLabel}>Inv</div>
+                      <div style={S.statLabel}>{t("projects.cardInv")}</div>
                       <div style={S.statValue}>{proj.totals.invoiceCount}</div>
                     </div>
                   ) : null}
                   {proj.totals.estimateTotal > 0 ? (
                     <div style={S.statItem}>
-                      <div style={S.statLabel}>Est. total</div>
+                      <div style={S.statLabel}>{t("projects.cardEstTotal")}</div>
                       <div style={S.statValue}>{formatMoney(proj.totals.estimateTotal)}</div>
                     </div>
                   ) : null}
                   {proj.totals.invoiceTotal > 0 ? (
                     <div style={S.statItem}>
-                      <div style={S.statLabel}>Invoiced</div>
+                      <div style={S.statLabel}>{t("projects.cardInvoiced")}</div>
                       <div style={S.statValue}>{formatMoney(proj.totals.invoiceTotal)}</div>
                     </div>
                   ) : null}
                   {(proj.totals?.balanceRemaining || 0) > 0 ? (
                     <div style={S.statItem}>
-                      <div style={S.statLabel}>Balance due</div>
+                      <div style={S.statLabel}>{t("projects.cardBalanceDue")}</div>
                       <div style={S.statValue}>{formatMoney(proj.totals.balanceRemaining)}</div>
                     </div>
                   ) : null}
                   {proj.latestActivityAt ? (
                     <div style={S.statItem}>
-                      <div style={S.statLabel}>Last activity</div>
-                      <div style={S.activityText}>{formatRelativeDate(proj.latestActivityAt)}</div>
+                      <div style={S.statLabel}>{t("projects.cardLastActivity")}</div>
+                      <div style={S.activityText}>{formatRelativeDate(proj.latestActivityAt, t, lang)}</div>
                     </div>
                   ) : null}
                 </div>
                 {onOpenProjectDetail && proj.id ? (
                   <div style={{ fontSize: 11.5, fontWeight: 800, color: "rgba(147,197,253,0.9)", letterSpacing: "0.04em" }}>
-                    Open project →
+                    {t("projects.openProject")}
                   </div>
                 ) : null}
               </div>

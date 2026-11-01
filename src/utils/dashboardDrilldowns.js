@@ -1,6 +1,8 @@
 // @ts-nocheck
 /* eslint-disable */
 
+import { translate } from "../lib/i18n";
+
 // Lane 3 shared drill-down semantics.
 //
 // Dashboard metrics and the list filters they drill into must never disagree.
@@ -229,40 +231,41 @@ export function customerMatchesDrilldown(customer, drilldown, options = {}) {
 
 const DRILLDOWN_LABELS = {
   [DRILLDOWN_SCOPES.INVOICES]: {
-    [INVOICE_DRILLDOWNS.RECEIVABLES]: { en: "Open balance", es: "Saldo abierto" },
-    [INVOICE_DRILLDOWNS.OVERDUE]: { en: "Overdue", es: "Vencidas" },
-    [INVOICE_DRILLDOWNS.PAID]: { en: "Paid", es: "Pagadas" },
-    [INVOICE_DRILLDOWNS.COLLECTED]: { en: "Collected", es: "Cobradas" },
-    [INVOICE_DRILLDOWNS.PAYMENT_STATUS]: { en: "Payment follow-up", es: "Seguimiento de pago" },
+    [INVOICE_DRILLDOWNS.RECEIVABLES]: "drilldown.invoicesOpenBalance",
+    [INVOICE_DRILLDOWNS.OVERDUE]: "drilldown.invoicesOverdue",
+    [INVOICE_DRILLDOWNS.PAID]: "drilldown.invoicesPaid",
+    [INVOICE_DRILLDOWNS.COLLECTED]: "drilldown.invoicesCollected",
+    [INVOICE_DRILLDOWNS.PAYMENT_STATUS]: "drilldown.invoicesPaymentFollowUp",
   },
   [DRILLDOWN_SCOPES.PROJECTS]: {
-    [PROJECT_DRILLDOWNS.ACTIVE]: { en: "Active jobs", es: "Trabajos activos" },
-    [PROJECT_DRILLDOWNS.IN_MOTION]: { en: "Jobs in motion", es: "Trabajos en curso" },
-    [PROJECT_DRILLDOWNS.BALANCE]: { en: "Balance due", es: "Saldo pendiente" },
-    [PROJECT_DRILLDOWNS.OVERDUE]: { en: "Overdue invoices", es: "Facturas vencidas" },
-    [PROJECT_DRILLDOWNS.READY_TO_INVOICE]: { en: "Ready to invoice", es: "Listo para facturar" },
+    [PROJECT_DRILLDOWNS.ACTIVE]: "drilldown.projectsActive",
+    [PROJECT_DRILLDOWNS.IN_MOTION]: "drilldown.projectsInMotion",
+    [PROJECT_DRILLDOWNS.BALANCE]: "drilldown.projectsBalance",
+    [PROJECT_DRILLDOWNS.OVERDUE]: "drilldown.projectsOverdue",
+    [PROJECT_DRILLDOWNS.READY_TO_INVOICE]: "drilldown.projectsReadyToInvoice",
   },
   [DRILLDOWN_SCOPES.ESTIMATES]: {
-    [ESTIMATE_DRILLDOWNS.AWAITING]: { en: "Awaiting response", es: "Esperando respuesta" },
-    [ESTIMATE_DRILLDOWNS.OPEN]: { en: "Open estimates", es: "Estimados abiertos" },
-    [ESTIMATE_DRILLDOWNS.READY_TO_INVOICE]: { en: "Ready for invoice", es: "Listo para facturar" },
-    [ESTIMATE_DRILLDOWNS.HIGH_VALUE]: { en: "High value", es: "Alto valor" },
-    [ESTIMATE_DRILLDOWNS.LOST]: { en: "Lost", es: "Perdidos" },
-    [ESTIMATE_DRILLDOWNS.APPROVED]: { en: "Approved", es: "Aprobados" },
-    [ESTIMATE_DRILLDOWNS.DRAFT]: { en: "Draft", es: "Borrador" },
+    [ESTIMATE_DRILLDOWNS.AWAITING]: "drilldown.estimatesAwaiting",
+    [ESTIMATE_DRILLDOWNS.OPEN]: "drilldown.estimatesOpen",
+    [ESTIMATE_DRILLDOWNS.READY_TO_INVOICE]: "drilldown.estimatesReadyForInvoice",
+    [ESTIMATE_DRILLDOWNS.HIGH_VALUE]: "drilldown.estimatesHighValue",
+    [ESTIMATE_DRILLDOWNS.LOST]: "drilldown.estimatesLost",
+    [ESTIMATE_DRILLDOWNS.APPROVED]: "drilldown.estimatesApproved",
+    [ESTIMATE_DRILLDOWNS.DRAFT]: "drilldown.estimatesDraft",
   },
   [DRILLDOWN_SCOPES.CUSTOMERS]: {
-    [CUSTOMER_DRILLDOWNS.BALANCE_DUE]: { en: "Open balance due", es: "Saldo pendiente" },
-    [CUSTOMER_DRILLDOWNS.LINKED_PROJECTS]: { en: "Linked projects", es: "Proyectos vinculados" },
-    [CUSTOMER_DRILLDOWNS.OPEN_DOCUMENTS]: { en: "Open document activity", es: "Actividad de documentos" },
-    [CUSTOMER_DRILLDOWNS.OVERDUE]: { en: "Overdue accounts", es: "Cuentas vencidas" },
+    [CUSTOMER_DRILLDOWNS.BALANCE_DUE]: "drilldown.customersBalanceDue",
+    [CUSTOMER_DRILLDOWNS.LINKED_PROJECTS]: "drilldown.customersLinkedProjects",
+    [CUSTOMER_DRILLDOWNS.OPEN_DOCUMENTS]: "drilldown.customersOpenDocuments",
+    [CUSTOMER_DRILLDOWNS.OVERDUE]: "drilldown.customersOverdue",
   },
 };
 
+// The map holds shared-dictionary keys, not copy: the one owner resolves them.
 export function drilldownLabel(scope, drilldown, lang = "en") {
-  const entry = DRILLDOWN_LABELS?.[String(scope || "")]?.[String(drilldown || "")];
-  if (!entry) return "";
-  return lang === "es" ? entry.es : entry.en;
+  const key = DRILLDOWN_LABELS?.[String(scope || "")]?.[String(drilldown || "")];
+  if (!key) return "";
+  return translate(lang, key);
 }
 
 // A drill-down intent is transient navigation context, not persisted filter

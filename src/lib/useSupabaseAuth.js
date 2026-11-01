@@ -63,6 +63,19 @@ function getRedirectUrl() {
 // Minimum length enforced before any Supabase call is made.
 export const MIN_PASSWORD_LENGTH = 6;
 
+// The initial auth bootstrap owns the branded "Checking your session..." gate.
+// Supabase's calls carry no deadline of their own, so a hung callback exchange,
+// a hung getSession, or a listener that never speaks would hold that screen
+// forever. This watchdog is a UI deadline ONLY: it releases the gate and does
+// nothing else -- it cancels no promise, writes no session, signs nobody out,
+// clears no storage, and removes no callback parameter.
+export const AUTH_INITIAL_SESSION_TIMEOUT_MS = 8000;
+
+// Deliberately temporary and plain: it says what happened and what to do, and it
+// is withdrawn the moment any real auth result arrives.
+export const AUTH_INITIAL_SESSION_TIMEOUT_MESSAGE =
+  "We could not confirm your sign-in in time. Sign in to continue.";
+
 const AUTH_CALLBACK_PARAM_KEYS = [
   "code",
   "type",
@@ -138,6 +151,17 @@ export default function useSupabaseAuth() {
   const sessionRef = useRef(null);
   const rememberedEmailRef = useRef("");
 
+  // ONE monotonic owner of auth authority. Every onAuthStateChange event
+  // advances it BEFORE applying the state it carries; the initial bootstrap
+  // captures the value it started from. A bootstrap result whose captured
+  // revision no longer matches is stale by definition -- null, an old session, a
+  // different session, or an error alike -- and is dropped rather than applied.
+  // That is what stops a slow getSession from silently re-authenticating someone
+  // after a newer SIGNED_OUT, or from erasing a verified PASSWORD_RECOVERY.
+  const authAuthorityRevisionRef = useRef(0);
+  const initialAuthWatchdogRef = useRef(null);
+  const initialAuthTimedOutRef = useRef(false);
+
   // Captured synchronously during the FIRST render -- before any effect runs and
   // before the callback params are stripped from the URL -- so the recovery
   // signal survives cleanup.
@@ -174,6 +198,52 @@ export default function useSupabaseAuth() {
 
     let active = true;
 
+    const cancelInitialAuthWatchdog = () => {
+      if (initialAuthWatchdogRef.current === null) return;
+      clearTimeout(initialAuthWatchdogRef.current);
+      initialAuthWatchdogRef.current = null;
+    };
+
+    // Withdraws the watchdog's OWN temporary message and nothing else, so a real
+    // auth failure already on screen keeps its own text.
+    const clearWatchdogMessage = () => {
+      if (!initialAuthTimedOutRef.current) return;
+      initialAuthTimedOutRef.current = false;
+      setErrorMessage((current) => (current === AUTH_INITIAL_SESSION_TIMEOUT_MESSAGE ? "" : current));
+    };
+
+    // The authority reading this bootstrap starts from. Anything the listener
+    // says afterwards outranks every result this bootstrap produces later.
+    const bootstrapRevision = authAuthorityRevisionRef.current;
+    const bootstrapSuperseded = () => authAuthorityRevisionRef.current !== bootstrapRevision;
+
+    const applyBootstrapSession = (nextSession) => {
+      const nextUserEmail = normalizeEmail(nextSession?.user?.email);
+      setSession(nextSession);
+      if (nextUserEmail) setRememberedEmail(nextUserEmail);
+      clearWatchdogMessage();
+    };
+
+    const applyBootstrapError = (error, fallback) => {
+      initialAuthTimedOutRef.current = false;
+      setErrorMessage(asMessage(error, fallback));
+    };
+
+    // Armed before the bootstrap starts so that every exit path -- including a
+    // synchronous throw -- can cancel it. Fires at most once per hook lifecycle:
+    // no interval, no retry storm, no retry affordance.
+    initialAuthWatchdogRef.current = setTimeout(() => {
+      initialAuthWatchdogRef.current = null;
+      if (!active) return;
+      // Releases the gate ONLY. Whatever is still in flight may finish later and
+      // is applied then, provided no auth event has taken authority meanwhile.
+      setLoading(false);
+      // A real verified session is already authoritative: nothing to warn about.
+      if (sessionRef.current) return;
+      initialAuthTimedOutRef.current = true;
+      setErrorMessage((current) => current || AUTH_INITIAL_SESSION_TIMEOUT_MESSAGE);
+    }, AUTH_INITIAL_SESSION_TIMEOUT_MS);
+
     const loadSession = async () => {
       // Cleanup is deferred until AFTER processing has been attempted: an
       // implicit/hash callback carries its tokens in the fragment and Supabase
@@ -187,31 +257,32 @@ export default function useSupabaseAuth() {
           callbackSeen = true;
           const { data, error } = await client.auth.exchangeCodeForSession(authCode);
           if (!active) return;
-          if (error) {
-            setErrorMessage(asMessage(error, "Unable to complete Supabase sign-in."));
-          } else {
-            const nextSession = data?.session || null;
-            const nextUserEmail = normalizeEmail(nextSession?.user?.email);
-            setSession(nextSession);
-            if (nextUserEmail) setRememberedEmail(nextUserEmail);
+          // A newer auth event already owns the state; this result is history.
+          if (!bootstrapSuperseded()) {
+            if (error) {
+              applyBootstrapError(error, "Unable to complete Supabase sign-in.");
+            } else {
+              applyBootstrapSession(data?.session || null);
+            }
           }
         }
 
         const { data, error } = await client.auth.getSession();
-        if (!active) return;
+        if (!active || bootstrapSuperseded()) return;
         if (error) {
-          setErrorMessage(asMessage(error, "Unable to read Supabase session."));
+          applyBootstrapError(error, "Unable to read Supabase session.");
         } else {
-          const nextSession = data?.session || null;
-          const nextUserEmail = normalizeEmail(nextSession?.user?.email);
-          setSession(nextSession);
-          if (nextUserEmail) setRememberedEmail(nextUserEmail);
+          applyBootstrapSession(data?.session || null);
         }
       } catch (error) {
-        if (!active) return;
-        setErrorMessage(asMessage(error, "Unable to read Supabase session."));
+        if (!active || bootstrapSuperseded()) return;
+        applyBootstrapError(error, "Unable to read Supabase session.");
       } finally {
         if (active) {
+          // The bootstrap reached a terminal result, so the deadline it was held
+          // to no longer applies. Callback cleanup keeps its existing owner: it
+          // runs on terminal processing, never merely because time passed.
+          cancelInitialAuthWatchdog();
           setLoading(false);
           // Runs on success AND failure: a spent or rejected callback must not
           // leave a code, token, or recovery marker in the visible URL.
@@ -222,8 +293,13 @@ export default function useSupabaseAuth() {
 
     loadSession();
 
-    const authListener = client.auth.onAuthStateChange((event, nextSession) => {
+    const handleAuthStateChange = (event, nextSession) => {
       if (!active) return;
+      // The newest authority there is. The revision advances FIRST, so any
+      // bootstrap result still in flight can no longer apply anything at all.
+      authAuthorityRevisionRef.current += 1;
+      cancelInitialAuthWatchdog();
+      initialAuthTimedOutRef.current = false;
       // The ONLY proof that Supabase established a real recovery session. A URL
       // marker alone expresses intent; it never authorizes a password update.
       // An event without a session leaves recovery pending-but-unverified.
@@ -252,12 +328,22 @@ export default function useSupabaseAuth() {
       if (previousUserEmail) setRememberedEmail(previousUserEmail);
       setErrorMessage("");
       setInfoMessage("");
-    });
+    };
 
-    const subscription = authListener?.data?.subscription || authListener?.subscription || null;
+    let subscription = null;
+    try {
+      const authListener = client.auth.onAuthStateChange(handleAuthStateChange);
+      subscription = authListener?.data?.subscription || authListener?.subscription || null;
+    } catch (error) {
+      // A listener that cannot even be registered must not tear down the React
+      // tree or the bootstrap already in flight. The watchdog still guarantees
+      // the gate is released, and a real session may still arrive and be used.
+      setErrorMessage(asMessage(error, "Unable to monitor your sign-in status."));
+    }
 
     return () => {
       active = false;
+      cancelInitialAuthWatchdog();
       subscription?.unsubscribe?.();
     };
   }, [normalizeEmail]);

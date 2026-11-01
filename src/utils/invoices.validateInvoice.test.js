@@ -1,4 +1,5 @@
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { runtimeCommitAtomicRecords, VAULT_RUNTIME_ERROR_CODES } from "../lib/vaultRuntimeStore";
 import { readStoredAuditEvents } from "./auditStore";
 import {
   appendStripeInvoicePayment,
@@ -8,10 +9,26 @@ import {
   createManualInvoiceDraft,
   duplicateInvoiceDraft,
   normalizeInvoiceRecord,
+  updateManualInvoicePaymentDate,
   updateInvoiceLifecycleStatus,
   validateInvoiceAgainstEstimate,
   writeStoredInvoices,
 } from "./invoices";
+
+// Invoice persistence commits through the encrypted atomic runtime. With no
+// unlocked vault session the runtime refuses with NOT_READY, exactly as
+// production does; suites that persist install an explicit atomic commit.
+jest.mock("../lib/vaultRuntimeStore", () => ({
+  ...jest.requireActual("../lib/vaultRuntimeStore"),
+  runtimeCommitAtomicRecords: jest.fn(),
+}));
+
+beforeEach(() => {
+  runtimeCommitAtomicRecords.mockReset();
+  runtimeCommitAtomicRecords.mockImplementation(async () => {
+    throw new Error(VAULT_RUNTIME_ERROR_CODES.NOT_READY);
+  });
+});
 
 function createEstimate(overrides = {}) {
   return {
@@ -36,6 +53,75 @@ function createLinkedInvoice(overrides = {}) {
     ...overrides,
   };
 }
+
+describe("updateManualInvoicePaymentDate", () => {
+  function invoiceWithManualPayment(overrides = {}) {
+    return createLinkedInvoice({
+      id: "inv_payment_date",
+      invoiceNumber: "INV-PAYMENT-DATE",
+      invoiceTotal: 500,
+      total: 500,
+      amountPaid: 125,
+      balanceRemaining: 375,
+      status: "sent",
+      paymentStatus: "partial",
+      lineItems: [{ id: "line_1", description: "Labor", total: 500 }],
+      payments: [{
+        id: "pay_payment_date",
+        amount: 125,
+        paidAt: "2026-08-10",
+        method: "check",
+        note: "Deposit check",
+        order: 0,
+      }],
+      ...overrides,
+    });
+  }
+
+  test("updates only an existing manual payment date", () => {
+    const invoice = invoiceWithManualPayment();
+    const normalizedBefore = normalizeInvoiceRecord(invoice);
+    const result = updateManualInvoicePaymentDate(invoice, "pay_payment_date", "2026-08-11", { nowTs: 1 });
+
+    expect(result).toEqual(expect.objectContaining({ ok: true }));
+    expect(result.invoice).toEqual(expect.objectContaining({
+      id: "inv_payment_date",
+      invoiceNumber: "INV-PAYMENT-DATE",
+      invoiceTotal: 500,
+      amountPaid: 125,
+      balanceRemaining: 375,
+      status: "sent",
+      paymentStatus: "partial",
+    }));
+    expect(result.invoice.materials).toEqual(normalizedBefore.materials);
+    expect(result.invoice.payments).toEqual([
+      expect.objectContaining({
+        id: "pay_payment_date",
+        amount: 125,
+        method: "check",
+        note: "Deposit check",
+        paidAt: "2026-08-11",
+      }),
+    ]);
+  });
+
+  test("requires the exact existing payment identity without creating another payment", () => {
+    const invoice = invoiceWithManualPayment();
+    const result = updateManualInvoicePaymentDate(invoice, "pay_missing", "2026-08-11");
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "payment_not_found" }));
+    expect(invoice.payments).toHaveLength(1);
+    expect(invoice.payments[0]).toEqual(expect.objectContaining({ id: "pay_payment_date", paidAt: "2026-08-10" }));
+  });
+
+  test("rejects invalid payment dates without mutating the invoice", () => {
+    const invoice = invoiceWithManualPayment();
+    const result = updateManualInvoicePaymentDate(invoice, "pay_payment_date", "2026-02-30");
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "invalid_paid_at" }));
+    expect(invoice.payments[0]).toEqual(expect.objectContaining({ id: "pay_payment_date", paidAt: "2026-08-10" }));
+  });
+});
 
 describe("validateInvoiceAgainstEstimate void invoice exclusion", () => {
   test("void-only linked invoices leave the full approved balance available for a new invoice", () => {
@@ -366,6 +452,10 @@ describe("normalizeInvoiceRecord additional charges", () => {
 describe("invoice audit events", () => {
   beforeEach(() => {
     localStorage.clear();
+    runtimeCommitAtomicRecords.mockImplementation(async (records) => {
+      records.forEach(({ logicalKey, value }) => localStorage.setItem(logicalKey, value));
+      return { ok: true };
+    });
     localStorage.setItem(
       STORAGE_KEYS.PROJECTS,
       JSON.stringify([{ id: "proj_1", customerId: "cust_1", projectName: "Roof", status: "active" }]),
@@ -380,8 +470,8 @@ describe("invoice audit events", () => {
     localStorage.clear();
   });
 
-  test("emits invoice.created through the invoice write boundary", () => {
-    writeStoredInvoices([
+  test("emits invoice.created through the invoice write boundary", async () => {
+    await writeStoredInvoices([
       createLinkedInvoice({
         id: "inv_created",
         projectId: "proj_1",
@@ -402,7 +492,7 @@ describe("invoice audit events", () => {
     ]);
   });
 
-  test("emits payment and status events without storing raw invoice bodies", () => {
+  test("emits payment and status events without storing raw invoice bodies", async () => {
     const baseInvoice = createLinkedInvoice({
       id: "inv_status",
       projectId: "proj_1",
@@ -412,7 +502,7 @@ describe("invoice audit events", () => {
       balanceRemaining: 500,
       status: "sent",
     });
-    writeStoredInvoices([baseInvoice]);
+    await writeStoredInvoices([baseInvoice]);
     localStorage.removeItem(STORAGE_KEYS.AUDIT_EVENTS);
 
     const manualResult = addManualInvoicePayment(baseInvoice, {
@@ -420,7 +510,7 @@ describe("invoice audit events", () => {
       note: "Should not be logged",
     });
     expect(manualResult.ok).toBe(true);
-    writeStoredInvoices([manualResult.invoice]);
+    await writeStoredInvoices([manualResult.invoice]);
 
     let auditEvents = readStoredAuditEvents();
     expect(auditEvents).toEqual([
@@ -437,7 +527,7 @@ describe("invoice audit events", () => {
     expect(JSON.stringify(auditEvents)).not.toContain("Should not be logged");
 
     const paidInvoice = updateInvoiceLifecycleStatus(manualResult.invoice, "paid", { note: "Hidden note" });
-    writeStoredInvoices([paidInvoice]);
+    await writeStoredInvoices([paidInvoice]);
 
     auditEvents = readStoredAuditEvents();
     expect(auditEvents).toEqual(expect.arrayContaining([
@@ -452,7 +542,7 @@ describe("invoice audit events", () => {
     ]));
   });
 
-  test("emits invoice.payment_synced for stripe payment persistence", () => {
+  test("emits invoice.payment_synced for stripe payment persistence", async () => {
     const baseInvoice = createLinkedInvoice({
       id: "inv_stripe",
       projectId: "proj_1",
@@ -462,7 +552,7 @@ describe("invoice audit events", () => {
       balanceRemaining: 500,
       status: "sent",
     });
-    writeStoredInvoices([baseInvoice]);
+    await writeStoredInvoices([baseInvoice]);
     localStorage.removeItem(STORAGE_KEYS.AUDIT_EVENTS);
 
     const stripeResult = appendStripeInvoicePayment(baseInvoice, {
@@ -472,7 +562,7 @@ describe("invoice audit events", () => {
       receiptEmail: "sensitive@example.com",
     });
     expect(stripeResult.ok).toBe(true);
-    writeStoredInvoices([stripeResult.invoice]);
+    await writeStoredInvoices([stripeResult.invoice]);
 
     const auditEvents = readStoredAuditEvents();
     expect(auditEvents).toEqual([
@@ -487,5 +577,19 @@ describe("invoice audit events", () => {
       }),
     ]);
     expect(JSON.stringify(auditEvents)).not.toContain("sensitive@example.com");
+  });
+
+  test("an unavailable encrypted runtime refuses the write and persists no invoice or audit event", async () => {
+    runtimeCommitAtomicRecords.mockImplementation(async () => {
+      throw new Error(VAULT_RUNTIME_ERROR_CODES.NOT_READY);
+    });
+
+    await expect(writeStoredInvoices([
+      createLinkedInvoice({ id: "inv_refused", projectId: "proj_1" }),
+    ])).rejects.toThrow(VAULT_RUNTIME_ERROR_CODES.NOT_READY);
+
+    expect(runtimeCommitAtomicRecords).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBeNull();
+    expect(readStoredAuditEvents()).toEqual([]);
   });
 });

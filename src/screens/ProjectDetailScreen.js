@@ -10,8 +10,9 @@ import {
   updateProjectStoredStatus,
 } from "../utils/projects";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
-import useCloudBackupStatus from "../lib/useCloudBackupStatus";
+import useCloudBackupStatus, { CLOUD_PRODUCT_STATE } from "../lib/useCloudBackupStatus";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
+import { useLanguage } from "../lib/i18n";
 
 const PROJECT_DETAIL_TARGET_KEY = "estipaid-project-detail-target-v1";
 const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
@@ -137,11 +138,11 @@ const INV_STATUS_ACCENT = {
 };
 
 const PROJECT_STATUS_CONTROLS = [
-  { key: "draft", label: "Draft" },
-  { key: "estimating", label: "Estimating" },
-  { key: "active", label: "Active" },
-  { key: "completed", label: "Completed" },
-  { key: "archived", label: "Archived" },
+  { key: "draft", labelKey: "projectdetail.draft" },
+  { key: "estimating", labelKey: "projectdetail.estimating" },
+  { key: "active", labelKey: "projectdetail.active" },
+  { key: "completed", labelKey: "projectdetail.completed" },
+  { key: "archived", labelKey: "projectdetail.archived" },
 ];
 
 function normalizeProjectControlStatus(status) {
@@ -563,6 +564,8 @@ export default function ProjectDetailScreen({
   onOpenEstimate,
   onOpenInvoice,
 }) {
+  // Language and copy come from the app's one owner (src/lib/i18n).
+  const { t } = useLanguage();
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const ensureProjectMutation = async () => {
     const access = await ensureCanMutateBusinessData("local_save");
@@ -665,9 +668,9 @@ export default function ProjectDetailScreen({
     return (
       <div style={S.screen}>
         <div style={S.topBar}>
-          <button type="button" style={S.backBtn} onClick={onBack}>← Back</button>
+          <button type="button" style={S.backBtn} onClick={onBack}>{t("projectdetail.back")}</button>
         </div>
-        <div style={{ ...S.sectionWrap, ...S.emptyState }}>Project not found.</div>
+        <div style={{ ...S.sectionWrap, ...S.emptyState }}>{t("projectdetail.projectNotFound")}</div>
       </div>
     );
   }
@@ -712,36 +715,36 @@ export default function ProjectDetailScreen({
         : { bg: "rgba(99,179,237,0.08)", border: "rgba(99,179,237,0.2)", value: "rgba(99,179,237,0.94)" };
   const nextStep = overdueCount > 0
     ? {
-      label: "Needs attention",
+      label: t("projectdetail.needsAttention"),
       value: overdueCount === 1 ? "1 overdue invoice" : `${overdueCount} overdue invoices`,
       meta: "A payment follow-up is the top priority on this job.",
     }
     : hasBalanceDue
       ? {
-        label: "Needs attention",
+        label: t("projectdetail.needsAttention"),
         value: `${money(totals.balanceRemaining)} still due`,
         meta: "Open invoice balance remains on this project.",
       }
       : approvedEstCount > 0
         ? {
-          label: "Next up",
+          label: t("projectdetail.nextUp"),
           value: approvedEstCount === 1 ? "1 approved estimate is ready to bill" : `${approvedEstCount} approved estimates are ready to bill`,
           meta: "Convert approved work into the next invoice when ready.",
         }
         : totals.estimateCount === 0
           ? {
-            label: "Next up",
+            label: t("projectdetail.nextUp"),
             value: "Create the first estimate",
             meta: "No project documents exist yet.",
           }
           : totals.invoiceCount === 0
             ? {
-              label: "Next up",
+              label: t("projectdetail.nextUp"),
               value: "Create the first invoice",
               meta: "Estimate work exists, but nothing has been invoiced yet.",
             }
             : {
-              label: "Next up",
+              label: t("projectdetail.nextUp"),
               value: "Project is moving",
               meta: latestActivityAt ? `Latest recorded activity was ${fmtDate(latestActivityAt)}.` : "Documents and billing are up to date.",
             };
@@ -769,26 +772,26 @@ export default function ProjectDetailScreen({
     }
     if (hasBalanceDue && invoices.length > 0 && onOpenInvoice) {
       const target = [...invoices].sort((a, b) => invSortPriority(a) - invSortPriority(b))[0];
-      return { label: "Review Invoice", handler: () => onOpenInvoice(target) };
+      return { label: t("projectdetail.reviewInvoice"), handler: () => onOpenInvoice(target) };
     }
     if (approvedEstCount > 0 && onNewInvoice) {
       return {
-        label: "Create Invoice",
+        label: t("projectdetail.createInvoice"),
         handler: () => { writeProjectCreateSeed(view); onNewInvoice(); },
       };
     }
     if (firstActionableEstimate && onOpenEstimate) {
-      return { label: "Review Estimate", handler: () => onOpenEstimate(firstActionableEstimate) };
+      return { label: t("projectdetail.reviewEstimate"), handler: () => onOpenEstimate(firstActionableEstimate) };
     }
     if (totals.estimateCount === 0 && onNewEstimate) {
       return {
-        label: "Create First Estimate",
+        label: t("projectdetail.createFirstEstimate"),
         handler: () => { writeProjectCreateSeed(view); onNewEstimate(); },
       };
     }
     if (totals.invoiceCount === 0 && onNewInvoice) {
       return {
-        label: "Create First Invoice",
+        label: t("projectdetail.createFirstInvoice"),
         handler: () => { writeProjectCreateSeed(view); onNewInvoice(); },
       };
     }
@@ -797,19 +800,19 @@ export default function ProjectDetailScreen({
 
   const heroMetrics = [
     {
-      label: "Estimated",
+      label: t("projectdetail.estimated"),
       value: money(totals.estimateTotal),
       meta: totals.estimateCount === 1 ? "1 estimate" : `${totals.estimateCount} estimates`,
       tone: {},
     },
     {
-      label: "Invoiced",
+      label: t("projectdetail.invoiced"),
       value: money(totals.invoiceTotal),
       meta: totals.invoiceCount === 1 ? "1 invoice" : `${totals.invoiceCount} invoices`,
       tone: {},
     },
     {
-      label: "Paid",
+      label: t("projectdetail.paid"),
       value: money(totals.amountPaid),
       meta: hasPaid ? "Collected so far" : "No payment recorded yet",
       tone: hasPaid ? {
@@ -819,7 +822,7 @@ export default function ProjectDetailScreen({
       } : {},
     },
     {
-      label: "Balance Due",
+      label: t("projectdetail.balanceDue"),
       value: money(totals.balanceRemaining),
       meta: hasBalanceDue ? "Unpaid balance" : "No balance remaining",
       tone: hasBalanceDue ? {
@@ -830,37 +833,33 @@ export default function ProjectDetailScreen({
     },
   ];
 
-  // Gate 13D: compact backup chip beside the existing document-count/Updated
-  // chips -- not a full card. Same state source as the Home CloudBackupStatusBadge
-  // (useCloudBackupStatus), only meaningful copy, and only rendered when there
-  // is something to report (never for a device that has no cloud workspace or
-  // has never been dirty/backed up).
+  // Compact product-state renderer. Queue provenance and technical statuses are
+  // resolved by useCloudBackupStatus, never reinterpreted here.
   const backupChip = (() => {
     if (!cloudBackupStatus.isSupabaseReady || !cloudBackupStatus.userEmail || !cloudBackupStatus.hasCompany) return null;
-    if (cloudBackupStatus.restoredRecently) return { label: "Restored", color: "rgba(187,247,208,0.92)" };
-    if (cloudBackupStatus.displayState === "running") return { label: "Backing up...", color: "rgba(99,179,237,0.92)" };
-    if (cloudBackupStatus.displayState === "failed") return {
-      label: cloudBackupStatus.queueState?.status === "conflict"
-        ? "Cloud sync conflict"
-        : cloudBackupStatus.chipState === "local_cloud_mismatch" ? "Cloud changed elsewhere" : "Sync needs attention",
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.SYNCING) return { label: t("projectdetail.backingUp"), color: "rgba(99,179,237,0.92)" };
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.SYNC_ISSUE) return {
+      label: "Sync needs attention",
       color: "rgba(253,224,71,0.92)",
     };
-    if (cloudBackupStatus.displayState === "pending") return {
-      label: cloudBackupStatus.queueState?.status === "offline_pending"
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.PENDING) return {
+      label: cloudBackupStatus.productStatus?.pendingReason === "offline"
         ? "Waiting for connection"
-        : cloudBackupStatus.queueState?.status === "retry_wait"
+        : cloudBackupStatus.productStatus?.pendingReason === "retry"
           ? "Retrying cloud sync"
           : "Cloud sync pending",
       color: null,
     };
-    if (cloudBackupStatus.displayState === "current") return { label: "Cloud up to date", color: "rgba(187,247,208,0.92)" };
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.RESTORE_AVAILABLE) return { label: "Restore available", color: "rgba(99,179,237,0.92)" };
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.CLOUD_OK) return { label: t("projectdetail.cloudUpDate"), color: "rgba(187,247,208,0.92)" };
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.CLOUD_CONNECTED) return { label: t("cloud.connected"), color: "rgba(187,247,208,0.82)" };
     return null;
   })();
 
   return (
     <div className="pe-project-detail-screen" style={S.screen}>
       <div style={S.topBar}>
-        <button type="button" style={S.backBtn} onClick={onBack}>← Back</button>
+        <button type="button" style={S.backBtn} onClick={onBack}>{t("projectdetail.back")}</button>
       </div>
 
       {/* Hero */}
@@ -868,7 +867,7 @@ export default function ProjectDetailScreen({
         <div style={heroHeaderStyle}>
           <div style={S.heroHeaderTop}>
             <div style={S.heroIdentity}>
-              <div style={S.heroEyebrow}>Project</div>
+              <div style={S.heroEyebrow}>{t("projectdetail.project")}</div>
               <div className="pe-project-detail-title" style={projectNameStyle}>{project.projectName || "Untitled Project"}</div>
               {project.projectNumber ? <div style={{ fontSize: 11.5, fontWeight: 700, color: "rgba(230,241,248,0.4)", letterSpacing: "0.05em" }}>Project #{project.projectNumber}</div> : null}
               {customer ? (
@@ -878,7 +877,7 @@ export default function ProjectDetailScreen({
             </div>
             <div style={S.heroStatusStack}>
               <div style={{ ...S.statusBadge, background: projectStatusStyle.bg, border: `1px solid ${projectStatusStyle.border}`, color: projectStatusStyle.color }}>
-                {displayStatus.label}
+                {t(displayStatus.labelKey || "projects.statusDraft")}
               </div>
               <div style={S.heroContextRow}>
                 <div style={S.heroContextPill}>{documentCount === 1 ? "1 document" : `${documentCount} documents`}</div>
@@ -950,7 +949,7 @@ export default function ProjectDetailScreen({
                 onNewEstimate && onNewEstimate();
               }}
             >
-              + New Estimate
+              {t("projectdetail.newEstimate")}
             </button>
             <button
               type="button"
@@ -960,7 +959,7 @@ export default function ProjectDetailScreen({
                 onNewInvoice && onNewInvoice();
               }}
             >
-              + New Invoice
+              {t("projectdetail.newInvoice")}
             </button>
           </div>
           {onEditProject ? (
@@ -982,13 +981,13 @@ export default function ProjectDetailScreen({
               }}
               onClick={onEditProject}
             >
-              Edit Details
+              {t("projectdetail.editDetails")}
             </button>
           ) : null}
         </div>
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: isPhone ? "10px 0 4px" : "6px 0 2px" }} />
         <div style={S.statusControlWrap}>
-          <div style={S.statusControlLabel}>Project status</div>
+          <div style={S.statusControlLabel}>{t("projectdetail.projectStatus")}</div>
           <div style={isPhone ? { ...S.statusControlRow, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : S.statusControlRow}>
             {PROJECT_STATUS_CONTROLS.map((option) => {
               const selected = storedProjectStatus === option.key;
@@ -1005,14 +1004,14 @@ export default function ProjectDetailScreen({
                   }}
                   onClick={async () => {
                     if (!await ensureProjectMutation()) return;
-                    const updated = updateProjectStoredStatus(project.id, option.key);
+                    const updated = await updateProjectStoredStatus(project.id, option.key);
                     if (updated) {
                       setRefreshSeq((value) => value + 1);
                       window.dispatchEvent(new Event("estipaid:projects-changed"));
                     }
                   }}
                 >
-                  {option.label}
+                  {t(option.labelKey)}
                 </button>
               );
             })}
@@ -1022,14 +1021,14 @@ export default function ProjectDetailScreen({
 
       {/* Overview */}
       <div style={S.sectionWrap}>
-        <div style={S.sectionTitle}>Overview</div>
+        <div style={S.sectionTitle}>{t("projectdetail.overview")}</div>
         <div style={overviewGridStyle}>
           <div style={S.overviewCard}>
-            <div style={S.overviewLabel}>Estimated</div>
+            <div style={S.overviewLabel}>{t("projectdetail.estimated")}</div>
             <div style={overviewValueStyle}>{money(totals.estimateTotal)}</div>
           </div>
           <div style={S.overviewCard}>
-            <div style={S.overviewLabel}>Invoiced</div>
+            <div style={S.overviewLabel}>{t("projectdetail.invoiced")}</div>
             <div style={overviewValueStyle}>{money(totals.invoiceTotal)}</div>
           </div>
           <div
@@ -1041,7 +1040,7 @@ export default function ProjectDetailScreen({
               } : {}),
             }}
           >
-            <div style={S.overviewLabel}>Paid</div>
+            <div style={S.overviewLabel}>{t("projectdetail.paid")}</div>
             <div style={{ ...overviewValueStyle, ...(hasPaid ? { color: "rgba(72,187,120,0.96)" } : {}) }}>{money(totals.amountPaid)}</div>
           </div>
           <div
@@ -1053,15 +1052,15 @@ export default function ProjectDetailScreen({
               } : {}),
             }}
           >
-            <div style={S.overviewLabel}>Balance Due</div>
+            <div style={S.overviewLabel}>{t("projectdetail.balanceDue")}</div>
             <div style={{ ...overviewValueStyle, ...(hasBalanceDue ? { color: "rgba(245,158,11,0.98)" } : {}) }}>{money(totals.balanceRemaining)}</div>
           </div>
           <div style={S.overviewCard}>
-            <div style={S.overviewLabel}>Estimates</div>
+            <div style={S.overviewLabel}>{t("projectdetail.estimates")}</div>
             <div style={overviewValueStyle}>{totals.estimateCount}</div>
           </div>
           <div style={S.overviewCard}>
-            <div style={S.overviewLabel}>Invoices</div>
+            <div style={S.overviewLabel}>{t("projectdetail.invoices")}</div>
             <div style={overviewValueStyle}>{totals.invoiceCount}</div>
           </div>
         </div>
@@ -1090,10 +1089,10 @@ export default function ProjectDetailScreen({
       </div>
 
       <div style={S.sectionWrap}>
-        <div style={S.sectionTitle}>Documents</div>
+        <div style={S.sectionTitle}>{t("projectdetail.documents")}</div>
         <div style={S.docFlowShell}>
           <div style={S.docFlowSummary}>
-            <div style={S.docFlowTitle}>Document flow</div>
+            <div style={S.docFlowTitle}>{t("projectdetail.documentFlow")}</div>
             <div style={S.docFlowMeta}>
               {documentCount === 0
                 ? "No estimates or invoices on this project yet."
@@ -1103,19 +1102,19 @@ export default function ProjectDetailScreen({
           <div style={docFlowGridStyle}>
             <div style={S.docFlowColumn}>
               <div style={S.docFlowColumnHeader}>
-                <div style={S.docFlowColumnTitle}>Estimates</div>
+                <div style={S.docFlowColumnTitle}>{t("projectdetail.estimates")}</div>
                 <div style={S.docFlowColumnCount}>{estimates.length === 1 ? "1 estimate" : `${estimates.length} estimates`}</div>
               </div>
               {estimates.length === 0 ? (
                 <div style={{ padding: "14px 16px", borderRadius: 10, border: "1px dashed rgba(255,255,255,0.07)", display: "grid", gap: 10, alignItems: "start" }}>
-                  <div style={{ fontSize: 13, color: "rgba(230,241,248,0.38)", lineHeight: 1.4 }}>No estimates for this project yet.</div>
+                  <div style={{ fontSize: 13, color: "rgba(230,241,248,0.38)", lineHeight: 1.4 }}>{t("projectdetail.noEstimatesProjectYet")}</div>
                   {onNewEstimate ? (
                     <button
                       type="button"
                       style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(99,179,237,0.2)", background: "rgba(99,179,237,0.07)", color: "rgba(99,179,237,0.82)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em" }}
                       onClick={() => { writeProjectCreateSeed(view); onNewEstimate && onNewEstimate(); }}
                     >
-                      + New Estimate
+                      {t("projectdetail.newEstimate")}
                     </button>
                   ) : null}
                 </div>
@@ -1149,19 +1148,19 @@ export default function ProjectDetailScreen({
 
             <div style={S.docFlowColumn}>
               <div style={S.docFlowColumnHeader}>
-                <div style={S.docFlowColumnTitle}>Invoices</div>
+                <div style={S.docFlowColumnTitle}>{t("projectdetail.invoices")}</div>
                 <div style={S.docFlowColumnCount}>{invoices.length === 1 ? "1 invoice" : `${invoices.length} invoices`}</div>
               </div>
               {invoices.length === 0 ? (
                 <div style={{ padding: "14px 16px", borderRadius: 10, border: "1px dashed rgba(255,255,255,0.07)", display: "grid", gap: 10, alignItems: "start" }}>
-                  <div style={{ fontSize: 13, color: "rgba(230,241,248,0.38)", lineHeight: 1.4 }}>No invoices for this project yet.</div>
+                  <div style={{ fontSize: 13, color: "rgba(230,241,248,0.38)", lineHeight: 1.4 }}>{t("projectdetail.noInvoicesProjectYet")}</div>
                   {onNewInvoice ? (
                     <button
                       type="button"
                       style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(99,179,237,0.2)", background: "rgba(99,179,237,0.07)", color: "rgba(99,179,237,0.82)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em" }}
                       onClick={() => { writeProjectCreateSeed(view); onNewInvoice && onNewInvoice(); }}
                     >
-                      + New Invoice
+                      {t("projectdetail.newInvoice")}
                     </button>
                   ) : null}
                 </div>
@@ -1200,7 +1199,7 @@ export default function ProjectDetailScreen({
       </div>
 
       <div style={S.sectionWrap}>
-        <div style={S.sectionTitle}>Danger Zone</div>
+        <div style={S.sectionTitle}>{t("projectdetail.dangerZone")}</div>
         <div style={{
           padding: "14px 14px 16px",
           borderRadius: 14,
@@ -1235,14 +1234,14 @@ export default function ProjectDetailScreen({
                   }}
                   onClick={async () => {
                     if (!await ensureProjectMutation()) return;
-                    const updated = updateProjectStoredStatus(project.id, "archived");
+                    const updated = await updateProjectStoredStatus(project.id, "archived");
                     if (updated) {
                       setRefreshSeq((value) => value + 1);
                       window.dispatchEvent(new Event("estipaid:projects-changed"));
                     }
                   }}
                 >
-                  Archive Project
+                  {t("projectdetail.archiveProject")}
                 </button>
               ) : null}
             </div>
@@ -1250,7 +1249,7 @@ export default function ProjectDetailScreen({
             <div style={{ display: "grid", gap: 8, maxWidth: 420 }}>
               <label style={{ display: "grid", gap: 6 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(230,241,248,0.72)" }}>
-                  Type DELETE to confirm permanent deletion.
+                  {t("projectdetail.typeDeleteConfirmPermanentDeletion")}
                 </div>
                 <input
                   className="pe-input"
@@ -1284,14 +1283,14 @@ export default function ProjectDetailScreen({
                     }}
                     onClick={async () => {
                       if (!await ensureProjectMutation()) return;
-                      const updated = updateProjectStoredStatus(project.id, "archived");
+                      const updated = await updateProjectStoredStatus(project.id, "archived");
                       if (updated) {
                         setRefreshSeq((value) => value + 1);
                         window.dispatchEvent(new Event("estipaid:projects-changed"));
                       }
                     }}
                   >
-                    Archive Project
+                    {t("projectdetail.archiveProject")}
                   </button>
                 ) : null}
                 <button
@@ -1315,7 +1314,7 @@ export default function ProjectDetailScreen({
                     setDeleteBusy(true);
                     setDeleteMessage("");
                     try {
-                      const result = deleteStoredProject(project.id);
+                      const result = await deleteStoredProject(project.id);
                       if (!result?.removed) {
                         setDeleteMessage("Unable to delete this project right now.");
                         setDeleteBusy(false);
@@ -1330,7 +1329,7 @@ export default function ProjectDetailScreen({
                     }
                   }}
                 >
-                  Permanently Delete Project
+                  {t("projectdetail.permanentlyDeleteProject")}
                 </button>
               </div>
             </div>

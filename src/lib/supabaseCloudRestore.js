@@ -2,18 +2,25 @@ import { getSupabaseClient } from "./supabaseClient";
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { setCloudAssetBindingsBatch } from "./cloudAssetBindings";
 import { compareRestoredLineItemOrder } from "./cloudLineItemContract";
+import { decodeInvoiceScopeNotes } from "../utils/backendDataMapper";
 import { readSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
-import { readCloudBackupQueueState } from "./cloudBackupQueue";
+import { readCloudBackupQueueState, createEmptyCloudBackupQueueState } from "./cloudBackupQueue";
+import { createEmptyCloudMutationLedger, readCloudMutationLedger } from "./cloudMutationLedger";
 import { captureVerifiedCloudSyncBaseline } from "./cloudSyncBaseline";
 import { tryAcquireCloudOperationRunLock, releaseCloudOperationRunLock } from "./cloudOperationRunLock";
 import { CLOUD_OPERATION_OWNER } from "./cloudOperationOwnership";
 import { buildLocalSnapshotFromStorage, scanLocalDataIntegrity } from "./localDataIntegrity";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
+import { runtimeCommitAtomicRecords, getVaultRuntimeStatus, isVaultRuntimeReadable, isVaultRuntimeReady } from "./vaultRuntimeStore";
+import { deriveWorkspaceVaultTag } from "./vaultSession";
+import { getActiveAccountScopedStorage, getActiveAccountWorkspaceIdentity, isAuthoritativeVaultRuntimeInstalled, VaultMutationNotReadyError } from "./accountScopedLocalStorage";
+import { getBrowserSurfaceClaimToken } from "./browserSurfaceAuthority";
 import {
   ensureCurrentDeviceCanWriteCloud,
   ensureCurrentDeviceCanApplyLocalRestore,
+  operationFenceStillCurrent,
   DEVICE_LOCK_LOST_CODE,
   DEVICE_LOCK_LOST_RESTORE_MESSAGE,
 } from "./supabaseDeviceLock";
@@ -57,6 +64,7 @@ export const CLOUD_RESTORE_STATUS = {
   NO_CLOUD_DATA: "no_cloud_data",
   ELIGIBLE: "eligible",
   RESTORED: "restored",
+  RECOVERED_UNVERIFIED: "recovered_unverified",
   DEVICE_LOCKED: "device_locked",
   BLOCKED_UNSUPPORTED_SHAPE: "blocked_unsupported_shape",
   RUN_LOCK_BUSY: "run_lock_busy",
@@ -543,14 +551,42 @@ export function mapCloudInvoiceLineItem(row) {
   return item;
 }
 
-function mapCloudPayment(row) {
-  return {
+// PAYMENT DATE DECAY.
+//
+// `paid_at` was restored verbatim, and the local invoice normalizer then ran it
+// through normalizeIsoDate(), which reads the LOCAL calendar via
+// getFullYear/getMonth/getDate. West of UTC that turns a persisted midnight-UTC
+// instant into the previous day: in Phoenix (UTC-7) `2026-08-10T00:00:00Z`
+// became `2026-08-09`, which the backend mapper then wrote back as
+// `2026-08-09T00:00:00.000Z`. Every restore/backup cycle walked the payment a
+// further day backwards.
+//
+// Reading the UTC calendar date makes the cycle a fixed point. This shifts
+// nothing, guesses no timezone and applies no tolerance -- it only stops the
+// local timezone from reinterpreting an instant that is already a calendar fact.
+function persistedPaymentDate(value) {
+  if (value === null || value === undefined || value === "") return value ?? null;
+  const text = String(value).trim();
+  if (!text) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toISOString().slice(0, 10);
+}
+
+export function mapCloudPayment(row) {
+  const payment = {
     id: requireLegacyId(row, "invoice_payments"),
     amount: row?.amount ?? null,
     method: row?.method || "",
     status: row?.status || "paid",
-    paidAt: row?.paid_at || null,
+    paidAt: persistedPaymentDate(row?.paid_at) || null,
   };
+  // The contractor's payment note, persisted in invoice_payments.notes and read
+  // back under the local field name the invoice normalizer already owns.
+  const note = asText(row?.notes);
+  if (note) payment.note = note;
+  return payment;
 }
 
 // Restores the estimate from its restore_payload verbatim -- the payload
@@ -576,12 +612,14 @@ function mapCloudEstimateToLocal(row) {
 function mapCloudInvoiceToLocal(row, customerIdByCloudId, projectIdByCloudId, lineItemsByInvoiceCloudId, paymentsByInvoiceCloudId) {
   const id = requireLegacyId(row, "invoices");
   const cloudId = asText(row?.id);
+  const scope = decodeInvoiceScopeNotes(row?.notes);
   return {
     id,
     customerId: customerIdByCloudId.get(asText(row?.customer_id)) || "",
     projectId: projectIdByCloudId.get(asText(row?.project_id)) || "",
     sourceEstimateId: asText(row?.source_estimate_legacy_id) || "",
     invoiceNumber: row?.invoice_number || "",
+    estimateNumber: row?.estimate_number || "",
     status: row?.status || "draft",
     paymentStatus: row?.payment_status || "unpaid",
     invoiceTotal: row?.total_amount ?? 0,
@@ -589,7 +627,15 @@ function mapCloudInvoiceToLocal(row, customerIdByCloudId, projectIdByCloudId, li
     balanceRemaining: row?.balance_remaining ?? 0,
     date: row?.invoice_date || "",
     dueDate: row?.due_date || "",
-    notes: row?.notes || "",
+    notes: scope ? scope.notes : (row?.notes || ""),
+    ...(scope ? {
+      scopeNotes: scope.scopeNotes,
+      ...(scope.scopeImages ? { scopeImages: scope.scopeImages } : {}),
+      ...(scope.tradeInsert ? { tradeInsert: scope.tradeInsert } : {}),
+      ...(typeof scope.includeInvoiceScopeOnPdf === "boolean"
+        ? { ui: { includeInvoiceScopeOnPdf: scope.includeInvoiceScopeOnPdf } } : {}),
+    } : {}),
+    terms: row?.terms || "",
     lineItems: lineItemsByInvoiceCloudId.get(cloudId) || [],
     payments: paymentsByInvoiceCloudId.get(cloudId) || [],
   };
@@ -950,12 +996,77 @@ function captureRestoredCloudAssetBindings({ companyId, fetched, restorableEstim
 // partial restore, not a guessed one: every field that is written comes
 // directly from a cloud column (or, for estimates, the exact captured local
 // object) with a known, faithful local equivalent.
+// Cloud portability is an allowlist: customer/project/estimate/invoice rows
+// (including invoice children), and the app bundle's profile/settings/templates.
+// The delivery ledger, legacy queue, retries and convergence journal are LOCAL
+// execution state. The encrypted runtime MERGES an atomic batch into its catalog;
+// omitting these keys therefore retained old catalog history after a fresh restore.
+// Rebase only an eligible empty-business target in the SAME atomic restore batch.
+// Active target writes/deletes and rollback journals are never discardable.
+function freshRestoreOperationalBaseline(storage) {
+  const keys = [STORAGE_KEYS.CLOUD_MUTATION_LEDGER, STORAGE_KEYS.CLOUD_BACKUP_QUEUE,
+    STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL, STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS, STORAGE_KEYS.CLOUD_SYNC_BASELINE];
+  const previous = keys.map(key => [key, storage.getItem(key)]);
+  const parse = key => {
+    const raw = previous.find(([candidate]) => candidate === key)[1];
+    return raw == null || raw === "" ? null : JSON.parse(raw);
+  };
+  const persistedLedger = parse(STORAGE_KEYS.CLOUD_MUTATION_LEDGER);
+  const ledger = readCloudMutationLedger(storage);
+  const queue = parse(STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
+  const journalRaw = previous.find(([key]) => key === STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)[1];
+  if ((persistedLedger != null && (!Array.isArray(persistedLedger.entries) || persistedLedger.entries.length !== ledger.entries.length))
+    || ledger.entries.some(entry => entry.status !== "acknowledged" && (entry.status !== "needs_attention" || entry.operation === "delete"))
+    || (queue != null && (typeof queue !== "object" || Array.isArray(queue) || typeof queue.pending !== "boolean"))
+    || queue?.pending || (journalRaw != null && journalRaw !== "")) {
+    throw new Error("Restore cannot replace pending local sync work or an unresolved recovery transaction.");
+  }
+  return {
+    previous,
+    records: [
+      [STORAGE_KEYS.CLOUD_MUTATION_LEDGER, createEmptyCloudMutationLedger()],
+      [STORAGE_KEYS.CLOUD_BACKUP_QUEUE, createEmptyCloudBackupQueueState()],
+      // Old local comparison/partial-recovery proof does not describe this
+      // candidate. Strict verification below creates the existing new baseline.
+      [STORAGE_KEYS.CLOUD_SYNC_BASELINE, null], [STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS, null],
+      // Journal absence is significant: the backup worker checks raw presence.
+      // Keep it absent; never serialize a null sentinel or erase a live journal.
+    ].map(([logicalKey, value]) => ({ logicalKey, value: JSON.stringify(value) })),
+  };
+}
+
+function restoreRuntimeStillCurrent(binding, { writable = false } = {}) {
+  const identity = getActiveAccountWorkspaceIdentity();
+  return identity.userId === binding.userId && identity.companyId === binding.companyId
+    && getActiveAccountScopedStorage() === binding.storage
+    && isAuthoritativeVaultRuntimeInstalled(binding.workspaceTag)
+    && getVaultRuntimeStatus().generation === binding.generation
+    && (writable ? isVaultRuntimeReady(binding.generation) : isVaultRuntimeReadable(binding.generation))
+    && Boolean(binding.browserClaim) && getBrowserSurfaceClaimToken() === binding.browserClaim;
+}
+
+async function bindRestoreRuntime({ storage, user, company, prepareSecureRestore }) {
+  if (prepareSecureRestore) {
+    const prepared = await prepareSecureRestore({ userId: user.id, companyId: company.id });
+    if (prepared?.ok !== true) throw new VaultMutationNotReadyError();
+  }
+  const binding = {
+    storage, userId: user.id, companyId: company.id,
+    workspaceTag: await deriveWorkspaceVaultTag(user.id, company.id),
+    generation: getVaultRuntimeStatus().generation,
+    browserClaim: getBrowserSurfaceClaimToken(),
+  };
+  if (!restoreRuntimeStillCurrent(binding, { writable: true })) throw new VaultMutationNotReadyError();
+  return binding;
+}
+
 async function executeSupabaseCloudRestoreOwned({
   storage,
   configured = false,
   user = null,
   company = null,
   allowPartialLocalSnapshot = false,
+  prepareSecureRestore = null,
 } = {}) {
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildExecuteResult(gated);
@@ -971,6 +1082,19 @@ async function executeSupabaseCloudRestoreOwned({
       noCloudDataDeleted: true,
       noExistingLocalDataOverwritten: true,
     });
+  }
+
+  // The IMMUTABLE generation this restore began under. Every later boundary
+  // must prove THIS fence, not merely that the device is active again: a
+  // restore that started under v5, lost the lease to another device at v6 and
+  // regained it at v7 is operating on cloud rows it read a generation ago.
+  const startFence = deviceAccess?.access?.fence || null;
+
+  let runtimeBinding;
+  try {
+    runtimeBinding = await bindRestoreRuntime({ storage, user, company, prepareSecureRestore });
+  } catch (error) {
+    return buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, { error: asText(error?.message) || "Secure local storage is unavailable." });
   }
 
   const client = getSupabaseClient();
@@ -1058,9 +1182,8 @@ async function executeSupabaseCloudRestoreOwned({
     return buildExecuteResult(CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY, { localCounts: finalLocalCounts });
   }
 
-  // All cloud reads and validation are complete. The following localStorage
-  // batch is synchronous, so a fresh ownership read directly before it closes
-  // the takeover window without risking a partial restore batch.
+  // All cloud reads and validation are complete. Re-prove the starting fence
+  // here and again after encryption at the atomic repository boundary.
   const applyAccess = await ensureCurrentDeviceCanApplyLocalRestore({
     configured,
     user,
@@ -1072,42 +1195,57 @@ async function executeSupabaseCloudRestoreOwned({
     if (applyAccess.deviceLockLost) return buildDeviceLockRestoreResult();
     return buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, { error: applyAccess.error });
   }
+  // Same GENERATION, not merely the same device. Nothing has been overwritten
+  // yet, so a stale generation stops here with the local data untouched.
+  if (!operationFenceStillCurrent({ startFence, completionAccess: applyAccess })) {
+    return buildDeviceLockRestoreResult();
+  }
 
+  let atomicDeviceLockLost = false;
   try {
-    storage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(payload.customers));
-    storage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(payload.projects));
-    storage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify(payload.invoices));
-    if (payload.estimates.length > 0) {
-      storage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify(payload.estimates));
-    }
-    if (payload.companyProfile) {
-      storage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(payload.companyProfile));
-    }
-    if (payload.settings) {
-      storage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(payload.settings));
-    }
-    if (Array.isArray(payload.scopeTemplates)) {
-      storage.setItem(STORAGE_KEYS.SCOPE_TEMPLATES, JSON.stringify(payload.scopeTemplates));
-    }
+    if (!restoreRuntimeStillCurrent(runtimeBinding, { writable: true })) throw new VaultMutationNotReadyError();
+    const freshBaseline = overwritingExistingLocalData ? null : freshRestoreOperationalBaseline(storage);
+    const records = [
+      [STORAGE_KEYS.CUSTOMERS, payload.customers], [STORAGE_KEYS.PROJECTS, payload.projects],
+      [STORAGE_KEYS.INVOICES, payload.invoices],
+      ...(payload.estimates.length > 0 ? [[STORAGE_KEYS.ESTIMATES, payload.estimates]] : []),
+      ...(payload.companyProfile ? [[STORAGE_KEYS.COMPANY_PROFILE, payload.companyProfile]] : []),
+      ...(payload.settings ? [[STORAGE_KEYS.SETTINGS, payload.settings]] : []),
+      ...(Array.isArray(payload.scopeTemplates) ? [[STORAGE_KEYS.SCOPE_TEMPLATES, payload.scopeTemplates]] : []),
+    ].map(([logicalKey, value]) => ({ logicalKey, value: JSON.stringify(value) }));
+    await runtimeCommitAtomicRecords([...records, ...(freshBaseline?.records || [])], { beforeCommit: async () => {
+      if (!restoreRuntimeStillCurrent(runtimeBinding)) return false;
+      if (freshBaseline && freshBaseline.previous.some(([key, value]) => storage.getItem(key) !== value)) return false;
+      const local = readLocalRestoreState(storage);
+      if (!isLocalCoreEmpty(local.localCounts) && !canRestoreOverExistingLocalData(local, allowPartialLocalSnapshot)) return false;
+      const access = await ensureCurrentDeviceCanApplyLocalRestore({ configured, user, company, storage, reason: "before_atomic_restore_commit" });
+      atomicDeviceLockLost = !access.ok || !operationFenceStillCurrent({ startFence, completionAccess: access });
+      return !atomicDeviceLockLost
+        && restoreRuntimeStillCurrent(runtimeBinding);
+    } });
   } catch (error) {
+    if (atomicDeviceLockLost) return buildDeviceLockRestoreResult({ noWritesPerformed: !error?.committed });
+    // A repository CAS may have committed before a session was superseded.
+    // Never roll that data back or claim an untouched device. Let the existing
+    // owner reopen the committed catalog only for this still-current workspace.
+    const identity = getActiveAccountWorkspaceIdentity();
+    if (error?.committed && prepareSecureRestore && identity.userId === runtimeBinding.userId
+      && identity.companyId === runtimeBinding.companyId && getActiveAccountScopedStorage() === storage
+      && getBrowserSurfaceClaimToken() === runtimeBinding.browserClaim) {
+      try { await prepareSecureRestore({ userId: runtimeBinding.userId, companyId: runtimeBinding.companyId }); } catch {}
+    }
     return buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, {
       error: asText(error?.message) || "Restore failed while writing local data.",
       notices: appBundle.status === "available"
         ? [...appBundle.notices]
         : [...appBundle.notices, buildSupplementalRestoreCoverageNotice()],
       appBundleSummary: appBundle.captureSummary,
-      noWritesPerformed: false,
+      noWritesPerformed: !error?.committed,
+      localRecoveryApplied: Boolean(error?.committed),
       noExistingLocalDataOverwritten: !overwritingExistingLocalData,
     });
   }
 
-  // The local write succeeded, so remember each restored record's cloud UUID.
-  // Guarded: this must never turn a successful restore into a failure.
-  const assetBindingCapture = captureRestoredCloudAssetBindings({
-    companyId,
-    fetched,
-    restorableEstimateRows: estimateRestoreState.restorableEstimateRows,
-  });
   // A cloud-origin local write is not, by itself, proof that the complete
   // writer/verifier contract round-trips. Capture the durable three-way
   // baseline only after a strict read-only comparison says every record (and
@@ -1115,22 +1253,58 @@ async function executeSupabaseCloudRestoreOwned({
   // defer the baseline to the existing repair/convergence path.
   let verification = null;
   let baselineCapture = { ok: false, code: "baseline_capture_not_verified" };
+  let baselineFenceLost = false;
   try {
     verification = await runSupabaseCloudVerification({ storageSnapshot: storage, configured, user, company });
     const hasVerificationWarning = Array.isArray(verification?.notices)
       && verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
-    if (verification?.ok && verification?.allMatched && !hasVerificationWarning && !(verification?.availableRepairs?.length)) {
-      baselineCapture = captureVerifiedCloudSyncBaseline({
+    if (
+      verification?.ok
+      && verification?.allMatched
+      && !hasVerificationWarning
+      && !(verification?.availableRepairs?.length || verification?.repairs?.length)
+      && !(verification?.blockers?.length)
+    ) {
+      // Strict verification is asynchronous, so ownership may have moved (and
+      // moved back under a newer generation) while it ran. A durable baseline
+      // is a claim that THIS run's cloud read is the settled truth, so it must
+      // be re-proved against the generation the run started under.
+      const baselineAccess = await ensureCurrentDeviceCanApplyLocalRestore({
+        configured,
+        user,
+        company,
         storage,
-        companyId,
-        queueRevision: Number(readCloudBackupQueueState()?.localMutationRevision || 0),
-        cloudSnapshot: { ok: true, mapped: payload },
-        verified: true,
-        deviceAccess: applyAccess,
+        reason: "before_restore_baseline_capture",
       });
+      baselineFenceLost = !baselineAccess.ok
+        || !operationFenceStillCurrent({ startFence, completionAccess: baselineAccess });
+      if (!baselineFenceLost) {
+        baselineCapture = captureVerifiedCloudSyncBaseline({
+          storage,
+          companyId,
+          queueRevision: Number(readCloudBackupQueueState()?.localMutationRevision || 0),
+          cloudSnapshot: { ok: true, mapped: payload },
+          verified: true,
+          deviceAccess: baselineAccess,
+        });
+      }
     }
   } catch {
     verification = { ok: false, allMatched: false, notices: [{ level: "warning", code: "restore_verification_failed" }] };
+  }
+
+  // The generation moved while verification ran. The local write already
+  // happened and is reported honestly, but this run may not publish success,
+  // capture a baseline, clear the queue, or emit restore-complete.
+  if (!restoreRuntimeStillCurrent(runtimeBinding)) {
+    return buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, { localRecoveryApplied: true, noWritesPerformed: false,
+      error: "Recovery was saved securely, but the current workspace must be reopened." });
+  }
+  if (baselineFenceLost) {
+    return buildDeviceLockRestoreResult({
+      noWritesPerformed: false,
+      noExistingLocalDataOverwritten: !overwritingExistingLocalData,
+    });
   }
 
   dispatchChangeEvents({
@@ -1141,8 +1315,57 @@ async function executeSupabaseCloudRestoreOwned({
     values: payload,
   });
 
-  // A successful restore makes local data equal to cloud by definition --
-  // there is nothing dirty to back up, so clear (not mark) the queue.
+  const verificationHasWarning = Array.isArray(verification?.notices)
+    && verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
+  const verificationHasBlocker = Array.isArray(verification?.blockers) && verification.blockers.length > 0;
+  const verificationHasRepair = Boolean(verification?.availableRepairs?.length || verification?.repairs?.length);
+  const verifiedCompletion = Boolean(
+    verification?.ok
+    && verification?.allMatched
+    && !verificationHasWarning
+    && !verificationHasBlocker
+    && !verificationHasRepair
+  );
+
+  // Keep a valuable local reconstruction when strict comparison does not
+  // prove equality, but never let it inherit clean-success queue, baseline,
+  // event, or UI semantics.
+  if (!verifiedCompletion) {
+    return buildExecuteResult(CLOUD_RESTORE_STATUS.RECOVERED_UNVERIFIED, {
+      restored: false,
+      localRecoveryApplied: true,
+      error: "Recovery copied data to this device, but cloud verification still needs attention.",
+      partial: blockers.length > 0,
+      blockers,
+      notices: appBundle.status === "available"
+        ? [...appBundle.notices]
+        : [...appBundle.notices, buildSupplementalRestoreCoverageNotice()],
+      appBundleRestored: appBundle.status === "available",
+      appBundleSummary: appBundle.captureSummary,
+      baselineCaptured: false,
+      verification,
+      noWritesPerformed: false,
+      noExistingLocalDataOverwritten: !overwritingExistingLocalData,
+      restoredCounts: {
+        customers: payload.customers.length,
+        projects: payload.projects.length,
+        invoices: payload.invoices.length,
+        estimates: payload.estimates.length,
+      },
+    });
+  }
+
+  // Record bindings only after strict comparison has established that this is
+  // a completed restore. Binding capture is local metadata, but it must not
+  // make an unverified reconstruction look finalized.
+  const assetBindingCapture = captureRestoredCloudAssetBindings({
+    companyId,
+    fetched,
+    restorableEstimateRows: estimateRestoreState.restorableEstimateRows,
+  });
+
+  // Strict verification above proved this restore equals cloud, so there is
+  // nothing dirty to back up and the queue may now be cleared.
   const queueAccess = await ensureCurrentDeviceCanApplyLocalRestore({
     configured,
     user,
@@ -1158,6 +1381,14 @@ async function executeSupabaseCloudRestoreOwned({
     return queueAccess.deviceLockLost
       ? buildDeviceLockRestoreResult(extra)
       : buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, { error: queueAccess.error, ...extra });
+  }
+  // Clearing the queue discards the record of pending local mutations. A stale
+  // generation must never do that on behalf of the generation that replaced it.
+  if (!operationFenceStillCurrent({ startFence, completionAccess: queueAccess })) {
+    return buildDeviceLockRestoreResult({
+      noWritesPerformed: false,
+      noExistingLocalDataOverwritten: !overwritingExistingLocalData,
+    });
   }
   clearCloudBackupDirty("cloud_restore_success");
 
@@ -1176,6 +1407,14 @@ async function executeSupabaseCloudRestoreOwned({
     return completionAccess.deviceLockLost
       ? buildDeviceLockRestoreResult(extra)
       : buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, { error: completionAccess.error, ...extra });
+  }
+  // RESTORED and the restore-complete event are the signals the rest of the app
+  // treats as "this device is settled". Only the starting generation may emit them.
+  if (!operationFenceStillCurrent({ startFence, completionAccess }) || !restoreRuntimeStillCurrent(runtimeBinding)) {
+    return buildDeviceLockRestoreResult({
+      noWritesPerformed: false,
+      noExistingLocalDataOverwritten: !overwritingExistingLocalData,
+    });
   }
 
   try {

@@ -2,9 +2,11 @@
 /* eslint-disable */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { translate, useLanguage } from "../lib/i18n";
 import {
   addManualInvoicePayment,
   appendStripeInvoicePayment,
+  commitStoredInvoices,
   backfillStripeInvoicePaymentDetails,
   INVOICE_STATUSES,
   PAYMENT_STATUSES,
@@ -13,6 +15,7 @@ import {
   readStoredInvoices,
   roundCurrency,
   todayISO,
+  updateManualInvoicePaymentDate,
   updateInvoiceLifecycleStatus,
   writeStoredInvoices,
 } from "../utils/invoices";
@@ -664,73 +667,55 @@ const paymentConsoleInlineNoteStyle = {
 };
 
 function getStripeSessionStateMeta(state, lang) {
+  // Module-level helper: bind the shared dictionary to the language it was handed.
+  const t = (key, vars) => translate(lang, key, vars);
   if (state === "review") {
     return {
-      label: lang === "es" ? "Revisión" : "Review",
+      label: t("invoices.review"),
       background: "rgba(248,113,113,0.10)",
       border: "rgba(248,113,113,0.24)",
       color: "rgba(254,202,202,0.98)",
-      summary: lang === "es"
-        ? "Stripe reportó un pago que no se pudo registrar automáticamente de forma segura."
-        : "Stripe reported a payment that could not be safely recorded automatically.",
-      nextAction: lang === "es"
-        ? "Revisa manualmente antes de registrar cualquier cobro."
-        : "Review manually before recording any payment.",
+      summary: t("invoices.stripeReportedPaymentCouldNotSafely"),
+      nextAction: t("invoices.reviewManuallyBeforeRecordingAnyPayment"),
     };
   }
   if (state === "stale") {
     return {
-      label: lang === "es" ? "Desactualizada" : "Stale",
+      label: t("invoices.stale"),
       background: "rgba(251,146,60,0.10)",
       border: "rgba(251,146,60,0.24)",
       color: "rgba(254,215,170,0.98)",
-      summary: lang === "es"
-        ? "El saldo cambió después de generar este enlace."
-        : "The invoice balance changed after this link was generated.",
-      nextAction: lang === "es"
-        ? "Genera un enlace nuevo si todavía se necesita el pago."
-        : "Generate a fresh link if payment is still needed.",
+      summary: t("invoices.invoiceBalanceChangedAfterLinkWas"),
+      nextAction: t("invoices.generateFreshLinkIfPaymentStill"),
     };
   }
   if (state === "synced") {
     return {
-      label: lang === "es" ? "Sincronizada" : "Synced",
+      label: t("invoices.synced"),
       background: "rgba(34,197,94,0.10)",
       border: "rgba(34,197,94,0.22)",
       color: "rgba(187,247,208,0.98)",
-      summary: lang === "es"
-        ? "Este pago de Stripe ya se registró en EstiPaid."
-        : "This Stripe payment has already been recorded in EstiPaid.",
-      nextAction: lang === "es"
-        ? "No se requiere otra acción de cobro."
-        : "No further collection action is needed.",
+      summary: t("invoices.stripePaymentHasAlreadyBeenRecorded"),
+      nextAction: t("invoices.noFurtherCollectionActionNeeded"),
     };
   }
   if (state === "expired") {
     return {
-      label: lang === "es" ? "Expirada" : "Expired",
+      label: t("invoices.expired"),
       background: "rgba(250,204,21,0.10)",
       border: "rgba(250,204,21,0.22)",
       color: "rgba(254,240,138,0.98)",
-      summary: lang === "es"
-        ? "Este enlace de Stripe expiró."
-        : "This Stripe link expired.",
-      nextAction: lang === "es"
-        ? "Genera un enlace nuevo si el cliente todavía necesita pagar."
-        : "Generate a fresh link if the customer still needs to pay.",
+      summary: t("invoices.stripeLinkExpired"),
+      nextAction: t("invoices.generateFreshLinkIfCustomerStill"),
     };
   }
   return {
-    label: lang === "es" ? "Pendiente" : "Pending",
+    label: t("invoices.pending"),
     background: "rgba(59,130,246,0.10)",
     border: "rgba(59,130,246,0.22)",
     color: "rgba(191,219,254,0.98)",
-    summary: lang === "es"
-      ? "Pendiente significa que se generó un enlace de Stripe, pero el pago todavía no se registró en EstiPaid."
-      : "Pending means a Stripe link was generated, but the payment has not been recorded in EstiPaid yet.",
-    nextAction: lang === "es"
-      ? "Cuando Stripe confirme el cobro, usa Revisar / sincronizar pago de Stripe."
-      : "After Stripe confirms the charge, use Check / Sync Stripe Payment.",
+    summary: t("invoices.pendingMeansStripeLinkWasGenerated"),
+    nextAction: t("invoices.afterStripeConfirmsChargeUseCheck"),
   };
 }
 
@@ -743,13 +728,13 @@ function getInvoicePaymentConsoleState({
   canSyncStripeSession,
   lang,
 }) {
+  // Module-level helper: bind the shared dictionary to the language it was handed.
+  const t = (key, vars) => translate(lang, key, vars);
   if (derivedStatus === INVOICE_STATUSES.VOID || paymentStatus === PAYMENT_STATUSES.VOID) {
     return {
-      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
-      label: lang === "es" ? "Factura anulada" : "Invoice voided",
-      summary: lang === "es"
-        ? "Mantén este registro solo como referencia. No se deben registrar más cobros."
-        : "Keep this invoice as reference only. No further collection action should be taken.",
+      eyebrow: t("invoices.paymentConsole"),
+      label: t("invoices.invoiceVoided"),
+      summary: t("invoices.keepInvoiceAsReferenceOnlyNo"),
       tone: {
         background: "rgba(148,163,184,0.08)",
         border: "rgba(148,163,184,0.18)",
@@ -759,11 +744,9 @@ function getInvoicePaymentConsoleState({
   }
   if (derivedStatus === INVOICE_STATUSES.PAID || paymentStatus === PAYMENT_STATUSES.PAID) {
     return {
-      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
-      label: lang === "es" ? "Factura liquidada" : "Invoice settled",
-      summary: lang === "es"
-        ? "El cobro ya está resuelto. Revisa el historial o los detalles de Stripe si necesitas contexto."
-        : "Collection is complete. Review the ledger or Stripe details if you need context.",
+      eyebrow: t("invoices.paymentConsole"),
+      label: t("invoices.invoiceSettled"),
+      summary: t("invoices.collectionCompleteReviewLedgerStripeDetails"),
       tone: {
         background: "rgba(34,197,94,0.08)",
         border: "rgba(34,197,94,0.2)",
@@ -773,11 +756,9 @@ function getInvoicePaymentConsoleState({
   }
   if (stripeSessionState === "review") {
     return {
-      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
-      label: lang === "es" ? "Requiere revisión" : "Needs review",
-      summary: lang === "es"
-        ? "Stripe detectó una situación que debe confirmarse manualmente antes de registrar el pago."
-        : "Stripe reported a situation that should be manually confirmed before recording payment.",
+      eyebrow: t("invoices.paymentConsole"),
+      label: t("invoices.needsReview"),
+      summary: t("invoices.stripeReportedSituationShouldManuallyConfirmed"),
       tone: {
         background: "rgba(248,113,113,0.08)",
         border: "rgba(248,113,113,0.2)",
@@ -787,11 +768,9 @@ function getInvoicePaymentConsoleState({
   }
   if (stripeSessionState === "expired") {
     return {
-      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
-      label: lang === "es" ? "Enlace expirado" : "Link expired",
-      summary: lang === "es"
-        ? "El cliente ya no debería usar el enlace anterior. Genera uno nuevo o cobra manualmente."
-        : "The customer should not use the old link. Generate a new link or take payment manually.",
+      eyebrow: t("invoices.paymentConsole"),
+      label: t("invoices.linkExpired"),
+      summary: t("invoices.customerShouldNotUseOldLink"),
       tone: {
         background: "rgba(250,204,21,0.08)",
         border: "rgba(250,204,21,0.2)",
@@ -801,15 +780,11 @@ function getInvoicePaymentConsoleState({
   }
   if (derivedStatus === INVOICE_STATUSES.OVERDUE) {
     return {
-      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
-      label: lang === "es" ? "Cobro urgente" : "Collection priority",
+      eyebrow: t("invoices.paymentConsole"),
+      label: t("invoices.collectionPriority"),
       summary: canUseStripe
-        ? (lang === "es"
-          ? "La factura está vencida. El siguiente paso más seguro es reenviar o regenerar el enlace de Stripe y luego sincronizar el pago."
-          : "This invoice is overdue. The safest next step is to send or refresh the Stripe link, then sync payment after confirmation.")
-        : (lang === "es"
-          ? "La factura está vencida. Registra un pago manual cuando el cliente pague."
-          : "This invoice is overdue. Record a manual payment when the customer pays."),
+        ? (t("invoices.invoiceOverdueSafestNextStepSend"))
+        : (t("invoices.invoiceOverdueRecordManualPaymentWhen")),
       tone: {
         background: "rgba(248,113,113,0.08)",
         border: "rgba(248,113,113,0.2)",
@@ -819,15 +794,11 @@ function getInvoicePaymentConsoleState({
   }
   if (String(paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PARTIAL) {
     return {
-      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
-      label: lang === "es" ? "Saldo abierto" : "Open Balance",
+      eyebrow: t("invoices.paymentConsole"),
+      label: t("invoices.openBalance"),
       summary: canSyncStripeSession
-        ? (lang === "es"
-          ? "Queda saldo por cobrar. Sigue con Stripe o agrega el siguiente pago manual."
-          : "A balance remains. Continue with Stripe or add the next manual payment.")
-        : (lang === "es"
-          ? "Queda saldo por cobrar. Agrega el siguiente pago cuando lo recibas."
-          : "A balance remains. Add the next payment when you receive it."),
+        ? (t("invoices.balanceRemainsContinueStripeAddNext"))
+        : (t("invoices.balanceRemainsAddNextPaymentWhen")),
       tone: {
         background: "rgba(245,158,11,0.08)",
         border: "rgba(245,158,11,0.2)",
@@ -837,15 +808,11 @@ function getInvoicePaymentConsoleState({
   }
   if (canTakePayment) {
     return {
-      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
-      label: lang === "es" ? "Lista para cobrar" : "Ready to collect",
+      eyebrow: t("invoices.paymentConsole"),
+      label: t("invoices.readyCollect"),
       summary: canUseStripe
-        ? (lang === "es"
-          ? "Elige entre cobro manual o enviar al cliente a Stripe."
-          : "Choose between a manual payment or sending the customer to Stripe.")
-        : (lang === "es"
-          ? "Registra el pago manual cuando el cliente pague."
-          : "Record the manual payment when the customer pays."),
+        ? (t("invoices.chooseBetweenManualPaymentSendingCustomer"))
+        : (t("invoices.recordManualPaymentWhenCustomerPays")),
       tone: {
         background: "rgba(59,130,246,0.08)",
         border: "rgba(59,130,246,0.2)",
@@ -854,11 +821,9 @@ function getInvoicePaymentConsoleState({
     };
   }
   return {
-    eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
-    label: lang === "es" ? "Solo referencia" : "Reference only",
-    summary: lang === "es"
-      ? "No hay acciones de cobro principales disponibles para esta factura."
-      : "No primary collection actions are available for this invoice.",
+    eyebrow: t("invoices.paymentConsole"),
+    label: t("invoices.referenceOnly"),
+    summary: t("invoices.noPrimaryCollectionActionsAvailableInvoice"),
     tone: {
       background: "rgba(148,163,184,0.08)",
       border: "rgba(148,163,184,0.18)",
@@ -875,10 +840,12 @@ function getInvoiceCardActionMeta({
   canSyncStripeSession,
   lang,
 }) {
+  // Module-level helper: bind the shared dictionary to the language it was handed.
+  const t = (key, vars) => translate(lang, key, vars);
   if (derivedStatus === INVOICE_STATUSES.OVERDUE) {
     return {
-      label: lang === "es" ? "Cobro vencido" : "Past Due",
-      detail: lang === "es" ? "Prioridad de cobranza" : "Collection priority",
+      label: t("invoices.pastDue"),
+      detail: t("invoices.collectionPriority2"),
       color: "rgba(248,113,113,0.92)",
       border: "rgba(239,68,68,0.2)",
       background: "rgba(239,68,68,0.08)",
@@ -886,12 +853,12 @@ function getInvoiceCardActionMeta({
   }
   if (stripeSessionState === "review" || stripeSessionState === "expired" || canSyncStripeSession) {
     return {
-      label: lang === "es" ? "Estado de pago" : "Payment Status",
+      label: t("invoices.paymentStatus"),
       detail: stripeSessionState === "review"
-        ? (lang === "es" ? "Revisar Stripe" : "Review Stripe")
+        ? (t("invoices.reviewStripe"))
         : stripeSessionState === "expired"
-          ? (lang === "es" ? "Enlace expirado" : "Link expired")
-          : (lang === "es" ? "Seguimiento de Stripe" : "Stripe follow-up"),
+          ? (t("invoices.linkExpired"))
+          : (t("invoices.stripeFollowUp")),
       color: "rgba(96,165,250,0.92)",
       border: "rgba(59,130,246,0.2)",
       background: "rgba(59,130,246,0.08)",
@@ -899,8 +866,8 @@ function getInvoiceCardActionMeta({
   }
   if (String(paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PARTIAL) {
     return {
-      label: lang === "es" ? "Saldo abierto" : "Open Balance",
-      detail: lang === "es" ? "Cobro pendiente" : "Balance to collect",
+      label: t("invoices.openBalance"),
+      detail: t("invoices.balanceCollect"),
       color: "rgba(251,191,36,0.92)",
       border: "rgba(245,158,11,0.22)",
       background: "rgba(245,158,11,0.08)",
@@ -908,8 +875,8 @@ function getInvoiceCardActionMeta({
   }
   if (derivedStatus === INVOICE_STATUSES.PAID || String(paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID) {
     return {
-      label: lang === "es" ? "Pagado" : "Paid",
-      detail: lang === "es" ? "Cobro completo" : "Collection complete",
+      label: t("invoices.paid"),
+      detail: t("invoices.collectionComplete"),
       color: "rgba(74,222,128,0.92)",
       border: "rgba(34,197,94,0.2)",
       background: "rgba(34,197,94,0.08)",
@@ -917,16 +884,16 @@ function getInvoiceCardActionMeta({
   }
   if (canTakePayment) {
     return {
-      label: lang === "es" ? "Cobros" : "Receivables",
-      detail: lang === "es" ? "Lista para cobrar" : "Ready to collect",
+      label: t("invoices.receivables"),
+      detail: t("invoices.readyCollect"),
       color: "rgba(125,211,252,0.92)",
       border: "rgba(59,130,246,0.2)",
       background: "rgba(59,130,246,0.08)",
     };
   }
   return {
-    label: lang === "es" ? "Actividad" : "Activity",
-    detail: lang === "es" ? "Solo referencia" : "Reference only",
+    label: t("invoices.activity"),
+    detail: t("invoices.referenceOnly"),
     color: "rgba(203,213,225,0.88)",
     border: "rgba(148,163,184,0.18)",
     background: "rgba(148,163,184,0.08)",
@@ -984,32 +951,38 @@ function getInvoiceCardSurfaceTone({
 }
 
 function formatStatusLabel(status, lang) {
+  // Module-level helper: bind the shared dictionary to the language it was handed.
+  const t = (key, vars) => translate(lang, key, vars);
   const raw = String(status || "").toLowerCase();
-  if (raw === INVOICE_STATUSES.SENT) return lang === "es" ? "Enviada" : "Sent";
-  if (raw === INVOICE_STATUSES.PAID) return lang === "es" ? "Pagada" : "Paid";
-  if (raw === INVOICE_STATUSES.OVERDUE) return lang === "es" ? "Vencida" : "Overdue";
-  if (raw === INVOICE_STATUSES.VOID) return lang === "es" ? "Anulada" : "Void";
-  return lang === "es" ? "Borrador" : "Draft";
+  if (raw === INVOICE_STATUSES.SENT) return t("invoices.sent");
+  if (raw === INVOICE_STATUSES.PAID) return t("invoices.paid2");
+  if (raw === INVOICE_STATUSES.OVERDUE) return t("invoices.overdue");
+  if (raw === INVOICE_STATUSES.VOID) return t("invoices.void");
+  return t("invoices.draft");
 }
 
 function formatPaymentStatus(paymentStatus, lang) {
+  // Module-level helper: bind the shared dictionary to the language it was handed.
+  const t = (key, vars) => translate(lang, key, vars);
   const raw = String(paymentStatus || "").toLowerCase();
-  if (raw === PAYMENT_STATUSES.PAID) return lang === "es" ? "Pagado" : "Paid";
-  if (raw === PAYMENT_STATUSES.PARTIAL) return lang === "es" ? "Parcial" : "Partial";
-  if (raw === PAYMENT_STATUSES.VOID) return lang === "es" ? "Anulado" : "Void";
-  return lang === "es" ? "Pendiente" : "Unpaid";
+  if (raw === PAYMENT_STATUSES.PAID) return t("invoices.paid");
+  if (raw === PAYMENT_STATUSES.PARTIAL) return t("invoices.partial");
+  if (raw === PAYMENT_STATUSES.VOID) return t("invoices.void2");
+  return t("invoices.unpaid");
 }
 
 function formatPaymentMethod(method, lang) {
+  // Module-level helper: bind the shared dictionary to the language it was handed.
+  const t = (key, vars) => translate(lang, key, vars);
   const raw = String(method || "manual").trim().toLowerCase();
   if (raw === "stripe") return "Stripe";
-  if (raw === "cash") return lang === "es" ? "Efectivo" : "Cash";
-  if (raw === "check") return lang === "es" ? "Cheque" : "Check";
-  if (raw === "card") return lang === "es" ? "Tarjeta" : "Card";
+  if (raw === "cash") return t("invoices.cash");
+  if (raw === "check") return t("invoices.check");
+  if (raw === "card") return t("invoices.card");
   if (raw === "bank_transfer" || raw === "bank transfer" || raw === "transfer") {
-    return lang === "es" ? "Transferencia" : "Bank Transfer";
+    return t("invoices.bankTransfer");
   }
-  return lang === "es" ? "Manual" : "Manual";
+  return t("invoices.manual");
 }
 
 function formatStripeDetailText(value) {
@@ -1111,10 +1084,12 @@ function canRecordManualPayment(invoice) {
 }
 
 function getPaymentActionLabel(invoice, lang) {
+  // Module-level helper: bind the shared dictionary to the language it was handed.
+  const t = (key, vars) => translate(lang, key, vars);
   const hasPriorPayment = roundCurrency(invoice?.amountPaid || 0) > 0
     || String(invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PARTIAL;
-  if (hasPriorPayment) return lang === "es" ? "Agregar pago" : "Add Payment";
-  return lang === "es" ? "Cobrar" : "Take Payment";
+  if (hasPriorPayment) return t("invoices.addPayment");
+  return t("invoices.takePayment");
 }
 
 function getInvoiceCustomerEmail(invoice) {
@@ -1127,33 +1102,29 @@ function getInvoiceCustomerEmail(invoice) {
 }
 
 function getStatusConfirmationContent(nextStatus, lang) {
+  // Module-level helper: bind the shared dictionary to the language it was handed.
+  const t = (key, vars) => translate(lang, key, vars);
   if (nextStatus === INVOICE_STATUSES.SENT) {
     return {
-      title: lang === "es" ? "¿Marcar factura como enviada?" : "Mark invoice as sent?",
-      body: lang === "es"
-        ? "Esto actualizará el estado de la factura a Enviada."
-        : "This will update the invoice status to Sent.",
-      confirmLabel: lang === "es" ? "Marcar enviada" : "Mark Sent",
+      title: t("invoices.markInvoiceAsSent"),
+      body: t("invoices.willUpdateInvoiceStatusSent"),
+      confirmLabel: t("invoices.markSent"),
     };
   }
 
   if (nextStatus === INVOICE_STATUSES.PAID) {
     return {
-      title: lang === "es" ? "¿Marcar factura como pagada?" : "Mark invoice as paid?",
-      body: lang === "es"
-        ? "Esto actualizará el estado de la factura a Pagada."
-        : "This will update the invoice status to Paid.",
-      confirmLabel: lang === "es" ? "Marcar pagada" : "Mark Paid",
+      title: t("invoices.markInvoiceAsPaid"),
+      body: t("invoices.willUpdateInvoiceStatusPaid"),
+      confirmLabel: t("invoices.markPaid"),
     };
   }
 
   if (nextStatus === INVOICE_STATUSES.VOID) {
     return {
-      title: lang === "es" ? "¿Anular esta factura?" : "Void this invoice?",
-      body: lang === "es"
-        ? "Esto marcará la factura como Anulada. Debe tratarse como una acción protegida."
-        : "This will mark the invoice status to Void. This should be treated as a guarded action.",
-      confirmLabel: lang === "es" ? "Anular factura" : "Void Invoice",
+      title: t("invoices.voidInvoice"),
+      body: t("invoices.willMarkInvoiceStatusVoidShould"),
+      confirmLabel: t("invoices.voidInvoice2"),
     };
   }
 
@@ -1179,8 +1150,6 @@ function resolveInvoiceStripeFollowUpState(sessions, invoice) {
 }
 
 export default function InvoicesScreen({
-  lang,
-  t,
   spinTick = 0,
   onOpenProjectDetail,
   postSaveTarget = null,
@@ -1191,6 +1160,9 @@ export default function InvoicesScreen({
   snapshotReturn = null,
   onReturnToSnapshot,
 }) {
+  // Language and copy come from the app's one owner, not from props: the screen
+  // must follow a switch made anywhere else in the app without being re-mounted.
+  const { lang, t } = useLanguage();
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialPostSaveFilters = postSaveTarget?.type === "invoice" ? (postSaveTarget.filters || {}) : {};
   const [q, setQ] = useState(() => String(initialPostSaveFilters.q || ""));
@@ -1212,6 +1184,9 @@ export default function InvoicesScreen({
   const [paymentModalState, setPaymentModalState] = useState(null);
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paymentError, setPaymentError] = useState("");
+  const [paymentDateEditState, setPaymentDateEditState] = useState(null);
+  const [paymentDateEditBusy, setPaymentDateEditBusy] = useState(false);
+  const [paymentDateEditError, setPaymentDateEditError] = useState("");
   const [stripeCheckoutBusyId, setStripeCheckoutBusyId] = useState("");
   const [stripeCopyBusyId, setStripeCopyBusyId] = useState("");
   const [stripeSyncBusyId, setStripeSyncBusyId] = useState("");
@@ -1281,10 +1256,10 @@ export default function InvoicesScreen({
     borderColor: isPhone ? "rgba(255,255,255,0.11)" : undefined,
   };
 
-  const labelTotalMetric = lang === "es" ? "TOTAL" : "TOTAL";
-  const labelMarginMetric = lang === "es" ? "MARGEN" : "MARGIN";
-  const labelRevenue = lang === "es" ? "Ingresos" : "Revenue";
-  const labelMargin = lang === "es" ? "Margen" : "Margin";
+  const labelTotalMetric = t("invoices.total");
+  const labelMarginMetric = t("invoices.margin");
+  const labelRevenue = t("invoices.revenue");
+  const labelMargin = t("invoices.margin2");
 
   useEffect(() => {
     const refresh = () => setList(readStoredInvoices());
@@ -1427,7 +1402,7 @@ export default function InvoicesScreen({
     const prevCount = Number(prevListCountRef.current || 0);
     const nextCount = Number(list?.length || 0);
     if (hasMeasuredListRef.current && nextCount > prevCount) {
-      setToastMessage(lang === "es" ? "Factura creada" : "Invoice created");
+      setToastMessage(t("invoices.invoiceCreated"));
       setShowToast(true);
     }
     prevListCountRef.current = nextCount;
@@ -1828,21 +1803,13 @@ export default function InvoicesScreen({
     const alreadyRecorded = Boolean(options?.alreadyRecorded);
     let message = "";
     if (movedToPaid) {
-      message = lang === "es"
-        ? "Pago sincronizado. La factura se movió a Pagadas."
-        : "Payment synced. Invoice moved to Paid.";
+      message = t("invoices.paymentSyncedInvoiceMovedPaid");
     } else if (detailBackfilled) {
-      message = lang === "es"
-        ? "Pago de Stripe ya registrado. Los detalles del pago se actualizaron."
-        : "Stripe payment already recorded. Payment details were refreshed.";
+      message = t("invoices.stripePaymentAlreadyRecordedPaymentDetails");
     } else if (alreadyRecorded) {
-      message = lang === "es"
-        ? "Pago de Stripe ya registrado. Puedes abrir la factura sincronizada para confirmarlo."
-        : "Stripe payment already recorded. Open the synced invoice to confirm it.";
+      message = t("invoices.stripePaymentAlreadyRecordedOpenSynced");
     } else {
-      message = lang === "es"
-        ? "Pago de Stripe sincronizado correctamente."
-        : "Stripe payment synced successfully.";
+      message = t("invoices.stripePaymentSyncedSuccessfully");
     }
     setStripeSyncOutcome({
       tone: options?.tone || "success",
@@ -1850,17 +1817,15 @@ export default function InvoicesScreen({
       invoiceId: normalizedInvoiceId,
       targetStatus: invoiceStatus,
       actionLabel: movedToPaid
-        ? (lang === "es" ? "Ver en Pagadas" : "View in Paid")
-        : (lang === "es" ? "Abrir factura sincronizada" : "Open synced invoice"),
+        ? (t("invoices.viewPaid"))
+        : (t("invoices.openSyncedInvoice")),
     });
   };
 
   const openInvoice = (invoice) => {
     const editTarget = getDocumentEditTarget(invoice, "invoice");
     if (!editTarget) {
-      setToastMessage(lang === "es"
-        ? "Esta factura no se puede abrir porque falta su identidad guardada."
-        : "This invoice cannot be opened because its saved identity is missing.");
+      setToastMessage(t("invoices.invoiceCannotOpenedBecauseSavedIdentity"));
       setShowToast(true);
       return;
     }
@@ -1880,8 +1845,8 @@ export default function InvoicesScreen({
     } catch {}
   };
 
-  const persistInvoices = (nextInvoices, nextToast = "") => {
-    const normalized = writeStoredInvoices(nextInvoices);
+  const persistInvoices = async (nextInvoices, nextToast = "") => {
+    const normalized = (await commitStoredInvoices(nextInvoices, { source: "InvoicesScreen.persistInvoices" })).invoices;
     setList(normalized);
     if (nextToast) {
       setToastMessage(nextToast);
@@ -2084,23 +2049,17 @@ export default function InvoicesScreen({
     if (copied) {
       window.alert(
         (options?.successMessage
-          || (lang === "es"
-            ? "Enlace de pago copiado al portapapeles. Envíaselo al cliente para que pague.\n\nRecuerda: el enlace expira. Concilia el pago en EstiPaid después de confirmarlo en Stripe."
-            : "Payment link copied to clipboard. Send it to your customer to pay.\n\nReminder: Stripe links expire. Reconcile the payment in EstiPaid after Stripe confirms."))
+          || (t("invoices.paymentLinkCopiedClipboardSendCustomer")))
       );
       return true;
     }
 
     window.alert(
       (options?.fallbackMessage
-        || (lang === "es"
-          ? "No se pudo copiar automáticamente. Copia este enlace y envíaselo al cliente:\n\n"
-          : "Could not copy automatically. Copy this link and send it to your customer:\n\n"))
+        || (t("invoices.couldNotCopyAutomaticallyCopyLink")))
       + normalizedUrl
       + "\n\n"
-      + (lang === "es"
-        ? "Recuerda: el enlace expira. Concilia el pago en EstiPaid después de confirmarlo en Stripe."
-        : "Reminder: Stripe links expire. Reconcile the payment in EstiPaid after Stripe confirms.")
+      + (t("invoices.reminderStripeLinksExpireReconcilePayment"))
     );
     return false;
   };
@@ -2161,39 +2120,43 @@ export default function InvoicesScreen({
 
     const nextAction = overdueCount > 0
       ? {
-          label: lang === "es" ? "Cobro vencido" : "Overdue invoices",
-          detail: lang === "es"
-            ? `${overdueCount} ${overdueCount === 1 ? "factura vencida" : "facturas vencidas"} por ${moneyUSD(overdueBalance)}.`
-            : `${overdueCount} ${overdueCount === 1 ? "overdue invoice" : "overdue invoices"} for ${moneyUSD(overdueBalance)}.`,
+          label: t("invoices.overdueInvoices"),
+          detail: t(
+            overdueCount === 1 ? "invoices.overdueDetailOne" : "invoices.overdueDetailOther",
+            { count: overdueCount, amount: moneyUSD(overdueBalance) }
+          ),
           color: "rgba(248,113,113,0.88)",
         }
       : stripeFollowUpCount > 0
         ? {
-            label: lang === "es" ? "Estado de pago" : "Payment Status",
-            detail: lang === "es"
-              ? `${stripeFollowUpCount} ${stripeFollowUpCount === 1 ? "factura lista" : "facturas listas"} para seguimiento de Stripe o cobro.`
-              : `${stripeFollowUpCount} ${stripeFollowUpCount === 1 ? "invoice is" : "invoices are"} ready for Stripe or payment follow-up.`,
+            label: t("invoices.paymentStatus"),
+            detail: t(
+              stripeFollowUpCount === 1 ? "invoices.stripeFollowUpDetailOne" : "invoices.stripeFollowUpDetailOther",
+              { count: stripeFollowUpCount }
+            ),
             color: "rgba(96,165,250,0.88)",
           }
         : openCount > 0
           ? {
-              label: lang === "es" ? "Saldo abierto" : "Open Balance",
-              detail: lang === "es"
-                ? `${openCount} ${openCount === 1 ? "factura mantiene" : "facturas mantienen"} ${moneyUSD(openBalance)} por cobrar.`
-                : `${openCount} ${openCount === 1 ? "invoice carries" : "invoices carry"} ${moneyUSD(openBalance)} in receivables.`,
+              label: t("invoices.openBalance"),
+              detail: t(
+                openCount === 1 ? "invoices.openBalanceDetailOne" : "invoices.openBalanceDetailOther",
+                { count: openCount, amount: moneyUSD(openBalance) }
+              ),
               color: "rgba(251,191,36,0.88)",
             }
           : paidCount > 0
             ? {
-                label: lang === "es" ? "Pagado" : "Paid",
-                detail: lang === "es"
-                  ? `${paidCount} ${paidCount === 1 ? "factura está liquidada" : "facturas están liquidadas"} en esta vista.`
-                  : `${paidCount} ${paidCount === 1 ? "invoice is" : "invoices are"} fully settled in this view.`,
+                label: t("invoices.paid"),
+                detail: t(
+                  paidCount === 1 ? "invoices.paidDetailOne" : "invoices.paidDetailOther",
+                  { count: paidCount }
+                ),
                 color: "rgba(74,222,128,0.88)",
               }
             : {
-                label: lang === "es" ? "Actividad de facturas" : "Activity",
-                detail: lang === "es" ? "No hay facturas visibles en este momento." : "No visible invoices in this view right now.",
+                label: t("invoices.activity2"),
+                detail: t("invoices.noVisibleInvoicesViewRightNow"),
                 color: "rgba(203,213,225,0.78)",
               };
 
@@ -2319,9 +2282,7 @@ export default function InvoicesScreen({
       setStripeInlineNotice(
         invoiceId,
         "info",
-        lang === "es"
-          ? "Stripe Checkout fue cancelado. Puedes reutilizar el enlace existente o generar uno nuevo cuando quieras."
-          : "Stripe Checkout was canceled. You can reuse the existing link or generate a new one when you're ready."
+        t("invoices.stripeCheckoutWasCanceledCanReuse")
       );
       return;
     }
@@ -2330,9 +2291,7 @@ export default function InvoicesScreen({
       setStripeInlineNotice(
         invoiceId,
         "info",
-        lang === "es"
-          ? "Stripe recibió el pago. Vuelve a esta factura y haz clic en Revisar / sincronizar pago de Stripe para registrarlo en EstiPaid."
-          : "Stripe received the payment. Return to this invoice and click Check / Sync Stripe Payment to record it in EstiPaid."
+        t("invoices.stripeReceivedPaymentReturnInvoiceClick")
       );
       return;
     }
@@ -2340,9 +2299,7 @@ export default function InvoicesScreen({
     setStripeInlineNotice(
       invoiceId,
       "warning",
-      lang === "es"
-        ? "Stripe recibió el pago, pero este navegador no tiene la referencia local de la sesión. Vuelve a la sesión original de EstiPaid o revisa la factura manualmente antes de sincronizar."
-        : "Stripe received the payment, but this browser does not have the local session reference. Return to the original EstiPaid browser session or review the invoice manually before syncing."
+      t("invoices.stripeReceivedPaymentButBrowserDoes")
     );
   }, [lang, list, stripeCheckoutSessions]);
 
@@ -2373,7 +2330,7 @@ export default function InvoicesScreen({
       }
       return { ...entry, archived: true, archivedAt: new Date().toISOString() };
     });
-    persistInvoices(next);
+    await persistInvoices(next);
   };
 
   const duplicateInvoice = async (invoice) => {
@@ -2381,7 +2338,7 @@ export default function InvoicesScreen({
     const currentEstimates = loadSavedEstimates();
     const duplicated = duplicateInvoiceDraft(invoice, currentInvoices, { estimates: currentEstimates });
     if (!duplicated.ok || !duplicated.draft) {
-      window.alert(duplicated?.message || (lang === "es" ? "No se pudo duplicar la factura." : "Unable to duplicate invoice."));
+      window.alert(duplicated?.message || (t("invoices.unableDuplicateInvoice")));
       return;
     }
     const mutationAccess = await ensureCanMutateBusinessData("local_save");
@@ -2389,9 +2346,9 @@ export default function InvoicesScreen({
       window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return;
     }
-    persistInvoices(
+    await persistInvoices(
       [duplicated.draft, ...currentInvoices],
-      lang === "es" ? "Factura duplicada" : "Invoice duplicated"
+      t("invoices.invoiceDuplicated")
     );
     try {
       localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
@@ -2415,7 +2372,7 @@ export default function InvoicesScreen({
       window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return null;
     }
-    const normalizedInvoices = persistInvoices(nextInvoices);
+    const normalizedInvoices = await persistInvoices(nextInvoices);
     const updatedInvoice = normalizedInvoices.find((entry) => String(entry?.id || "").trim() === invoiceId) || null;
     if (!updatedInvoice) return;
     const normalizedNextStatus = String(nextStatus || "").trim().toLowerCase();
@@ -2495,12 +2452,12 @@ export default function InvoicesScreen({
 
     const amount = roundCurrency(paymentForm.amount);
     if (amount <= 0) {
-      setPaymentError(lang === "es" ? "Ingresa un monto mayor que $0." : "Enter a payment amount greater than $0.");
+      setPaymentError(t("invoices.enterPaymentAmountGreaterThan0"));
       return;
     }
 
     if (amount > roundCurrency(paymentModalState.balanceRemaining)) {
-      setPaymentError(lang === "es" ? "El pago no puede exceder el saldo pendiente." : "Payment amount cannot exceed the remaining balance.");
+      setPaymentError(t("invoices.paymentAmountCannotExceedRemainingBalance"));
       return;
     }
 
@@ -2523,7 +2480,7 @@ export default function InvoicesScreen({
       });
 
       if (!result?.ok || !result?.invoice) {
-        setPaymentError(result?.message || (lang === "es" ? "No se pudo registrar el pago." : "Unable to record payment."));
+        setPaymentError(result?.message || (t("invoices.unableRecordPayment")));
         return;
       }
 
@@ -2537,11 +2494,11 @@ export default function InvoicesScreen({
         setPaymentError(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
         return;
       }
-      persistInvoices(
+      await persistInvoices(
         nextInvoices,
         fullyPaid
-          ? (lang === "es" ? "Pago final registrado" : "Final payment recorded")
-          : (lang === "es" ? "Pago registrado" : "Payment recorded")
+          ? (t("invoices.finalPaymentRecorded"))
+          : (t("invoices.paymentRecorded"))
       );
       retireStripeCheckoutSessionsForInvoice(result.invoice, {
         retireAllPending: fullyPaid,
@@ -2549,6 +2506,55 @@ export default function InvoicesScreen({
       closePaymentModal();
     } finally {
       setPaymentBusy(false);
+    }
+  };
+
+  const openPaymentDateEditor = (invoice, payment) => {
+    const invoiceId = String(invoice?.id || "").trim();
+    const paymentId = String(payment?.id || "").trim();
+    if (!invoiceId || !paymentId) return;
+    setPaymentDateEditError("");
+    setPaymentDateEditState({ invoiceId, paymentId, paidAt: String(payment?.paidAt || "").trim() });
+  };
+
+  const closePaymentDateEditor = () => {
+    setPaymentDateEditState(null);
+    setPaymentDateEditError("");
+  };
+
+  const savePaymentDate = async () => {
+    if (paymentDateEditBusy || !paymentDateEditState?.invoiceId || !paymentDateEditState?.paymentId) return;
+
+    setPaymentDateEditBusy(true);
+    setPaymentDateEditError("");
+    try {
+      const currentInvoices = readStoredInvoices();
+      const targetInvoice = currentInvoices.find(
+        (entry) => String(entry?.id || "").trim() === paymentDateEditState.invoiceId
+      );
+      const result = updateManualInvoicePaymentDate(
+        targetInvoice,
+        paymentDateEditState.paymentId,
+        paymentDateEditState.paidAt
+      );
+      if (!result?.ok || !result?.invoice) {
+        setPaymentDateEditError(result?.message || "Unable to update this payment date.");
+        return;
+      }
+
+      const mutationAccess = await ensureCanMutateBusinessData("local_save");
+      if (!mutationAccess?.ok) {
+        setPaymentDateEditError(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+        return;
+      }
+
+      const nextInvoices = currentInvoices.map((entry) => (
+        String(entry?.id || "").trim() === paymentDateEditState.invoiceId ? result.invoice : entry
+      ));
+      await persistInvoices(nextInvoices, "Payment date updated.");
+      closePaymentDateEditor();
+    } finally {
+      setPaymentDateEditBusy(false);
     }
   };
 
@@ -2561,9 +2567,7 @@ export default function InvoicesScreen({
       setStripeInlineNotice(
         invoiceId,
         "info",
-        lang === "es"
-          ? "Usando el enlace activo de Stripe existente para este saldo de factura."
-          : "Using existing active Stripe link for this invoice balance."
+        t("invoices.usingExistingActiveStripeLinkInvoice")
       );
       return { mode: "reused", sessionRef: reusableSession, balanceRemaining };
     }
@@ -2578,9 +2582,7 @@ export default function InvoicesScreen({
       setStripeInlineNotice(
         invoiceId,
         "info",
-        lang === "es"
-          ? "Ya se está generando un enlace de Stripe para esta factura. Inténtalo de nuevo en un momento."
-          : "A Stripe link is already being generated for this invoice. Try again in a moment."
+        t("invoices.stripeLinkAlreadyBeingGeneratedInvoice")
       );
       return { mode: "locked", balanceRemaining };
     }
@@ -2597,9 +2599,7 @@ export default function InvoicesScreen({
         setStripeInlineNotice(
           invoiceId,
           "info",
-          lang === "es"
-            ? "Usando el enlace activo de Stripe existente para este saldo de factura."
-            : "Using existing active Stripe link for this invoice balance."
+          t("invoices.usingExistingActiveStripeLinkInvoice")
         );
         return { mode: "reused", sessionRef: storedReusableSession, balanceRemaining };
       }
@@ -2623,7 +2623,7 @@ export default function InvoicesScreen({
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || !String(payload?.checkoutUrl || "").trim()) {
-        window.alert(payload?.error || options?.createErrorMessage || (lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe checkout."));
+        window.alert(payload?.error || options?.createErrorMessage || (t("invoices.unableGenerateStripeCheckout")));
         return { mode: "error", balanceRemaining };
       }
 
@@ -2658,7 +2658,7 @@ export default function InvoicesScreen({
         balanceRemaining,
       };
     } catch (_error) {
-      window.alert(options?.createErrorMessage || (lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe checkout."));
+      window.alert(options?.createErrorMessage || (t("invoices.unableGenerateStripeCheckout")));
       return { mode: "error", balanceRemaining };
     } finally {
       releaseSharedStripeCheckoutCreateLock(sharedLock.lockKey, sharedLock.lockToken);
@@ -2672,7 +2672,7 @@ export default function InvoicesScreen({
     setStripeCheckoutBusyId(invoiceId);
     try {
       const result = await ensureStripeCheckoutSession(invoice, {
-        createErrorMessage: lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe checkout.",
+        createErrorMessage: t("invoices.unableGenerateStripeCheckout"),
       });
       if (!result?.sessionRef?.checkoutUrl) return;
       const openedWindow = typeof window !== "undefined" && typeof window.open === "function"
@@ -2680,9 +2680,7 @@ export default function InvoicesScreen({
         : null;
       if (!openedWindow) {
         window.alert(
-          lang === "es"
-            ? "Stripe se abrió en una pestaña nueva. Si tu navegador la bloqueó, usa \"Copiar enlace de pago\" para abrirla manualmente sin salir de EstiPaid."
-            : "Stripe should open in a new tab. If your browser blocked it, use \"Copy Payment Link\" to open it manually without leaving EstiPaid."
+          t("invoices.stripeShouldOpenNewTabIf")
         );
       }
     } finally {
@@ -2698,7 +2696,7 @@ export default function InvoicesScreen({
     setStripeCopyBusyId(invoiceId);
     try {
       const result = await ensureStripeCheckoutSession(invoice, {
-        createErrorMessage: lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe payment link.",
+        createErrorMessage: t("invoices.unableGenerateStripePaymentLink"),
       });
       if (!result?.sessionRef?.checkoutUrl) return;
       await copyCheckoutUrlWithFallback(String(result.sessionRef.checkoutUrl || "").trim(), getInvoiceCustomerEmail(invoice));
@@ -2719,9 +2717,7 @@ export default function InvoicesScreen({
     setStripeCopyBusyId(invoiceId);
     try {
       await copyCheckoutUrlWithFallback(String(sessionRef.checkoutUrl || "").trim(), getInvoiceCustomerEmail(invoice), {
-        successMessage: lang === "es"
-          ? "Enlace de Stripe existente copiado al portapapeles. Envíaselo al cliente para que pague.\n\nRecuerda: el enlace expira. Concilia el pago en EstiPaid después de confirmarlo en Stripe."
-          : "Existing Stripe link copied to clipboard. Send it to your customer to pay.\n\nReminder: Stripe links expire. Reconcile the payment in EstiPaid after Stripe confirms.",
+        successMessage: t("invoices.existingStripeLinkCopiedClipboardSend"),
       });
     } finally {
       setStripeCopyBusyId("");
@@ -2751,7 +2747,7 @@ export default function InvoicesScreen({
         setStripeInlineNotice(
           invoiceId,
           "error",
-          payload?.error || (lang === "es" ? "No se pudo revisar el pago de Stripe." : "Unable to check Stripe payment.")
+          payload?.error || (t("invoices.unableCheckStripePayment"))
         );
         return;
       }
@@ -2767,14 +2763,14 @@ export default function InvoicesScreen({
           setStripeInlineNotice(
             invoiceId,
             "warning",
-            lang === "es" ? "La sesión de Stripe expiró. Genera un enlace nuevo antes de volver a intentar." : "This Stripe session expired. Generate a fresh payment link before trying again."
+            t("invoices.stripeSessionExpiredGenerateFreshPayment")
           );
           return;
         }
         setStripeInlineNotice(
           invoiceId,
           "info",
-          lang === "es" ? "El pago de Stripe todavía no se completó. Revisa de nuevo después de que Stripe confirme el cobro." : "This Stripe payment has not completed yet. Check again after Stripe confirms the charge."
+          t("invoices.stripePaymentHasNotCompletedYet")
         );
         return;
       }
@@ -2784,7 +2780,7 @@ export default function InvoicesScreen({
         (entry) => String(entry?.id || "").trim() === invoiceId
       );
       if (!targetInvoice) {
-        setStripeInlineNotice(invoiceId, "error", lang === "es" ? "No se encontró la factura para sincronizar." : "Unable to find the invoice to sync.");
+        setStripeInlineNotice(invoiceId, "error", t("invoices.unableFindInvoiceSync"));
         return;
       }
 
@@ -2840,17 +2836,15 @@ export default function InvoicesScreen({
             const nextInvoices = currentInvoices.map((entry) => (
               String(entry?.id || "").trim() === invoiceId ? backfillResult.invoice : entry
             ));
-            persistInvoices(
+            await persistInvoices(
               nextInvoices,
-              lang === "es" ? "Detalles de Stripe actualizados" : "Stripe details refreshed"
+              t("invoices.stripeDetailsRefreshed")
             );
             setExpanded((current) => ({ ...current, [invoiceId]: true }));
             setStripeInlineNotice(
               invoiceId,
               "success",
-              lang === "es"
-                ? "Este pago de Stripe ya estaba registrado. Se actualizaron los detalles visibles del pago."
-                : "This Stripe payment was already recorded. Visible payment details were refreshed."
+              t("invoices.stripePaymentWasAlreadyRecordedVisible")
             );
             showStripeSyncOutcome(backfillResult.invoice, {
               detailBackfilled: true,
@@ -2858,7 +2852,7 @@ export default function InvoicesScreen({
             });
             return;
           }
-          setStripeInlineNotice(invoiceId, "info", lang === "es" ? "Este pago de Stripe ya se registró en EstiPaid." : "This Stripe payment is already recorded in EstiPaid.");
+          setStripeInlineNotice(invoiceId, "info", t("invoices.stripePaymentAlreadyRecordedEstipaid"));
           showStripeSyncOutcome(targetInvoice, {
             alreadyRecorded: true,
             tone: "info",
@@ -2875,22 +2869,22 @@ export default function InvoicesScreen({
           setStripeInlineNotice(
             invoiceId,
             "warning",
-            lang === "es" ? "El monto pagado en Stripe supera el saldo actual. Revísalo manualmente antes de registrarlo." : "The Stripe amount exceeds the current remaining balance. Review it manually before recording it."
+            t("invoices.stripeAmountExceedsCurrentRemainingBalance")
           );
           return;
         }
-        setStripeInlineNotice(invoiceId, "error", result?.message || (lang === "es" ? "No se pudo sincronizar el pago de Stripe." : "Unable to sync Stripe payment."));
+        setStripeInlineNotice(invoiceId, "error", result?.message || (t("invoices.unableSyncStripePayment")));
         return;
       }
 
       const nextInvoices = currentInvoices.map((entry) => (
         String(entry?.id || "").trim() === invoiceId ? result.invoice : entry
       ));
-      persistInvoices(
+      await persistInvoices(
         nextInvoices,
         String(result.invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID
-          ? (lang === "es" ? "Pago de Stripe sincronizado" : "Stripe payment synced")
-          : (lang === "es" ? "Pago de Stripe registrado" : "Stripe payment recorded")
+          ? (t("invoices.stripePaymentSynced"))
+          : (t("invoices.stripePaymentRecorded"))
       );
       retireStripeCheckoutSessionsForInvoice(result.invoice, {
         retireAllPending: String(result.invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID,
@@ -2907,15 +2901,15 @@ export default function InvoicesScreen({
         invoiceId,
         "success",
         String(result.invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID
-          ? (lang === "es" ? "Pago de Stripe registrado y factura liquidada." : "Stripe payment recorded and invoice is now paid.")
-          : (lang === "es" ? "Pago de Stripe registrado correctamente." : "Stripe payment recorded successfully.")
+          ? (t("invoices.stripePaymentRecordedInvoiceNowPaid"))
+          : (t("invoices.stripePaymentRecordedSuccessfully"))
       );
       showStripeSyncOutcome(result.invoice, {
         movedToPaid: String(result.invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID,
         tone: "success",
       });
     } catch (_error) {
-      setStripeInlineNotice(invoiceId, "error", lang === "es" ? "No se pudo revisar el pago de Stripe." : "Unable to check Stripe payment.");
+      setStripeInlineNotice(invoiceId, "error", t("invoices.unableCheckStripePayment"));
     } finally {
       setStripeSyncBusyId("");
     }
@@ -2926,8 +2920,8 @@ export default function InvoicesScreen({
       <div className="pe-card pe-company-shell">
         <div className="pe-company-profile-header pe-utility-panel-header" style={{ ...stickyListHeaderStyle, position: "sticky", minHeight: 56 }}>
           <div className="pe-company-header-title">
-            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={lang === "es" ? "Facturas" : "Invoices"}>
-              {lang === "es" ? "Facturas" : "Invoices"}
+            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={t("invoices.invoices")}>
+              {t("invoices.invoices")}
             </h1>
           </div>
           <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)", pointerEvents: "none" }}>
@@ -2946,7 +2940,7 @@ export default function InvoicesScreen({
           <div style={invoiceCockpitStyle}>
             <div style={{ display: "grid", gap: 6 }}>
               <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
-                {lang === "es" ? "Cobros" : "Receivables"}
+                {t("invoices.receivables")}
               </div>
               <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
                 {invoiceBoardSummary.nextAction.label}
@@ -2961,42 +2955,42 @@ export default function InvoicesScreen({
                 {
                   key: "receivables",
                   count: invoiceBoardSummary.openCount,
-                  label: lang === "es" ? "Cobros" : "Receivables",
+                  label: t("invoices.receivables"),
                   value: moneyUSD(invoiceBoardSummary.openBalance),
                   detail: invoiceBoardSummary.openCount > 0
-                    ? `${invoiceBoardSummary.openCount} ${invoiceBoardSummary.openCount === 1 ? (lang === "es" ? "abierta" : "open") : (lang === "es" ? "abiertas" : "open")}`
-                    : (lang === "es" ? "Sin saldo por cobrar" : "No open balance in view"),
+                    ? `${invoiceBoardSummary.openCount} ${invoiceBoardSummary.openCount === 1 ? (t("invoices.open")) : (t("invoices.open2"))}`
+                    : (t("invoices.noOpenBalanceView")),
                   color: invoiceBoardSummary.openBalance > 0 ? "rgba(251,191,36,0.88)" : "rgba(203,213,225,0.78)",
                   border: invoiceBoardSummary.openBalance > 0 ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.1)",
                 },
                 {
                   key: "overdue",
                   count: invoiceBoardSummary.overdueCount,
-                  label: lang === "es" ? "Cobro vencido" : "Overdue",
+                  label: t("invoices.overdue2"),
                   value: moneyUSD(invoiceBoardSummary.overdueBalance),
                   detail: invoiceBoardSummary.overdueCount > 0
-                    ? `${invoiceBoardSummary.overdueCount} ${invoiceBoardSummary.overdueCount === 1 ? (lang === "es" ? "vencida" : "overdue") : (lang === "es" ? "vencidas" : "overdue")}`
-                    : (lang === "es" ? "Nada vencido en vista" : "No overdue balance in view"),
+                    ? `${invoiceBoardSummary.overdueCount} ${invoiceBoardSummary.overdueCount === 1 ? (t("invoices.overdue3")) : (t("invoices.overdue4"))}`
+                    : (t("invoices.noOverdueBalanceView")),
                   color: invoiceBoardSummary.overdueBalance > 0 ? "rgba(248,113,113,0.88)" : "rgba(203,213,225,0.78)",
                   border: invoiceBoardSummary.overdueBalance > 0 ? "rgba(239,68,68,0.2)" : "rgba(255,255,255,0.1)",
                 },
                 {
                   key: "paid",
                   count: invoiceBoardSummary.paidCount,
-                  label: lang === "es" ? "Pagado" : "Paid",
+                  label: t("invoices.paid"),
                   value: moneyUSD(invoiceBoardSummary.paidAmount),
-                  detail: `${invoiceBoardSummary.paidCount} ${invoiceBoardSummary.paidCount === 1 ? (lang === "es" ? "factura liquidada" : "paid invoice") : (lang === "es" ? "facturas liquidadas" : "paid invoices")}`,
+                  detail: `${invoiceBoardSummary.paidCount} ${invoiceBoardSummary.paidCount === 1 ? (t("invoices.paidInvoice")) : (t("invoices.paidInvoices"))}`,
                   color: "rgba(74,222,128,0.84)",
                   border: "rgba(34,197,94,0.2)",
                 },
                 {
                   key: "payment-status",
                   count: invoiceBoardSummary.stripeFollowUpCount,
-                  label: lang === "es" ? "Estado de pago" : "Payment Status",
+                  label: t("invoices.paymentStatus"),
                   value: String(invoiceBoardSummary.stripeFollowUpCount),
                   detail: invoiceBoardSummary.stripeFollowUpCount > 0
-                    ? (lang === "es" ? "Listas para seguimiento" : "Ready for follow-up")
-                    : (lang === "es" ? "Sin seguimiento pendiente" : "No Stripe follow-up in view"),
+                    ? (t("invoices.readyFollowUp"))
+                    : (t("invoices.noStripeFollowUpView")),
                   color: invoiceBoardSummary.stripeFollowUpCount > 0 ? "rgba(96,165,250,0.84)" : "rgba(203,213,225,0.78)",
                   border: invoiceBoardSummary.stripeFollowUpCount > 0 ? "rgba(59,130,246,0.2)" : "rgba(255,255,255,0.1)",
                 },
@@ -3026,7 +3020,7 @@ export default function InvoicesScreen({
                     type="button"
                     onClick={() => toggleMetricFilter(item.key)}
                     aria-pressed={isActive}
-                    aria-label={`${item.label}: ${item.value}. ${isActive ? (lang === "es" ? "Quitar filtro" : "Clear filter") : (lang === "es" ? "Filtrar facturas" : "Filter invoices")}`}
+                    aria-label={`${item.label}: ${item.value}. ${isActive ? (t("invoices.clearFilter")) : (t("invoices.filterInvoices"))}`}
                     style={{
                       ...invoiceCockpitStatStyle,
                       border: `1px solid ${isActive ? item.color : item.border}`,
@@ -3057,7 +3051,7 @@ export default function InvoicesScreen({
               <input
                 type="text"
                 className="pe-input pe-estimates-search-input"
-                placeholder={lang === "es" ? "Buscar…" : "Search..."}
+                placeholder={t("invoices.search")}
                 value={q}
                 onChange={(event) => { setQ(event.target.value); setTypeaheadHidden(false); setHighlightInvoiceId(""); }}
                 onKeyDown={(evt) => {
@@ -3074,7 +3068,7 @@ export default function InvoicesScreen({
                 <button
                   type="button"
                   className="pe-btn pe-btn-ghost"
-                  aria-label={lang === "es" ? "Limpiar búsqueda" : "Clear search"}
+                  aria-label={t("invoices.clearSearch")}
                   onClick={() => { setQ(""); setHighlightInvoiceId(""); }}
                   style={{
                     position: "absolute",
@@ -3099,7 +3093,7 @@ export default function InvoicesScreen({
                 <div
                   id="invoice-typeahead-list"
                   role="listbox"
-                  aria-label={lang === "es" ? "Facturas coincidentes" : "Matching invoices"}
+                  aria-label={t("invoices.matchingInvoices")}
                   style={{
                     position: "absolute",
                     top: "calc(100% + 6px)",
@@ -3119,13 +3113,13 @@ export default function InvoicesScreen({
                 >
                   {invoiceTypeaheadMatches.length === 0 ? (
                     <div style={{ padding: "9px 11px", fontSize: 12.5, color: "rgba(208,219,228,0.6)" }}>
-                      {lang === "es" ? "Sin facturas coincidentes" : "No matching invoices"}
+                      {t("invoices.noMatchingInvoices")}
                     </div>
                   ) : invoiceTypeaheadMatches.map((invoice) => {
                     const rowId = String(invoice?.id || "");
                     const meta = invoiceDisplayMeta.get(rowId) || {};
                     const numberText = String(invoice?.invoiceNumber || "").trim();
-                    const rowCustomer = String(meta.customerName || invoice?.customerName || (lang === "es" ? "Sin cliente" : "No customer")).trim();
+                    const rowCustomer = String(meta.customerName || invoice?.customerName || (t("invoices.noCustomer"))).trim();
                     const rowProject = String(meta.projectName || invoice?.projectName || "").trim();
                     const rowTotal = roundCurrency(invoice?.invoiceTotal || 0);
                     const rowPaid = roundCurrency(invoice?.amountPaid || 0);
@@ -3133,10 +3127,10 @@ export default function InvoicesScreen({
                     const rowStatus = formatStatusLabel(deriveInvoiceStatus(invoice), lang);
                     const rowDue = formatDateOnly(invoice?.dueDate) || formatDateOnly(invoice?.invoiceDate || invoice?.date || invoice?.job?.date);
                     const detailParts = [
-                      `${moneyUSD(rowTotal)} ${lang === "es" ? "total" : "total"}`,
-                      `${moneyUSD(rowPaid)} ${lang === "es" ? "pagado" : "paid"}`,
-                      `${moneyUSD(rowBalance)} ${lang === "es" ? "saldo" : "balance"}`,
-                      rowDue ? `${lang === "es" ? "Vence" : "Due"} ${rowDue}` : "",
+                      `${moneyUSD(rowTotal)} ${t("invoices.total2")}`,
+                      `${moneyUSD(rowPaid)} ${t("invoices.paid3")}`,
+                      `${moneyUSD(rowBalance)} ${t("invoices.balance")}`,
+                      rowDue ? `${t("invoices.due")} ${rowDue}` : "",
                     ].filter(Boolean);
                     return (
                       <button
@@ -3160,13 +3154,13 @@ export default function InvoicesScreen({
                       >
                         <span style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
                           <span style={{ fontWeight: 800, fontSize: 13.5 }}>
-                            {numberText ? `#${numberText}` : (lang === "es" ? "Factura sin número" : "Untitled invoice")}
+                            {numberText ? `#${numberText}` : (t("invoices.untitledInvoice"))}
                           </span>
                           <span style={{ fontSize: 12.5, color: "rgba(215,225,233,0.82)" }}>{rowCustomer}</span>
                           <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(148,163,184,0.85)" }}>{rowStatus}</span>
                           {invoice?.archived ? (
                             <span style={{ fontSize: 10, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(203,213,225,0.8)", border: "1px solid rgba(148,163,184,0.35)", borderRadius: 999, padding: "1px 7px" }}>
-                              {lang === "es" ? "Archivada" : "Archived"}
+                              {t("invoices.archived")}
                             </span>
                           ) : null}
                         </span>
@@ -3187,7 +3181,7 @@ export default function InvoicesScreen({
                 onChange={(event) => setStatusFilter(event.target.value)}
                 style={statusSelectStyle}
               >
-                <option value="all">{lang === "es" ? "Todos los estados" : "All Statuses"}</option>
+                <option value="all">{t("invoices.allStatuses")}</option>
                 <option value={INVOICE_STATUSES.DRAFT}>{formatStatusLabel(INVOICE_STATUSES.DRAFT, lang)}</option>
                 <option value={INVOICE_STATUSES.SENT}>{formatStatusLabel(INVOICE_STATUSES.SENT, lang)}</option>
                 <option value={INVOICE_STATUSES.PAID}>{formatStatusLabel(INVOICE_STATUSES.PAID, lang)}</option>
@@ -3196,7 +3190,7 @@ export default function InvoicesScreen({
               </select>
 
               <button type="button" style={clearButtonStyle} onClick={() => setShowArchived((value) => !value)}>
-                {showArchived ? (lang === "es" ? "Ver activos" : "Show active") : (lang === "es" ? "Ver archivadas" : "Show archived")}
+                {showArchived ? (t("invoices.showActive")) : (t("invoices.showArchived"))}
               </button>
 
               <button
@@ -3209,7 +3203,7 @@ export default function InvoicesScreen({
                   setMetricFilter("");
                 }}
               >
-                {lang === "es" ? "Limpiar" : "Clear"}
+                {t("invoices.clear")}
               </button>
 
               {/* The drill-down's own chip used to live here. The context strip
@@ -3244,7 +3238,7 @@ export default function InvoicesScreen({
                       className="pe-btn pe-btn-ghost"
                       onClick={() => revealInvoiceOnBoard(stripeSyncOutcome.invoiceId, stripeSyncOutcome.targetStatus)}
                     >
-                      {stripeSyncOutcome.actionLabel || (lang === "es" ? "Abrir factura sincronizada" : "Open synced invoice")}
+                      {stripeSyncOutcome.actionLabel || (t("invoices.openSyncedInvoice"))}
                     </button>
                   ) : null}
                   <button
@@ -3252,7 +3246,7 @@ export default function InvoicesScreen({
                     className="pe-btn pe-btn-ghost"
                     onClick={() => setStripeSyncOutcome(null)}
                   >
-                    {lang === "es" ? "Cerrar" : "Dismiss"}
+                    {t("invoices.dismiss")}
                   </button>
                 </div>
               </div>
@@ -3283,7 +3277,7 @@ export default function InvoicesScreen({
                     {drilldownLabel(DRILLDOWN_SCOPES.INVOICES, metricFilter, lang)}
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(239,245,249,0.96)" }}>
-                    {`${filtered.length} ${filtered.length === 1 ? (lang === "es" ? "factura" : "invoice") : (lang === "es" ? "facturas" : "invoices")}`}
+                    {`${filtered.length} ${filtered.length === 1 ? (t("invoices.invoice")) : (t("invoices.invoices2"))}`}
                     {metricFilter === INVOICE_DRILLDOWNS.OVERDUE
                       ? ` · ${moneyUSD(invoiceBoardSummary.overdueBalance)}`
                       : metricFilter === INVOICE_DRILLDOWNS.RECEIVABLES
@@ -3294,25 +3288,25 @@ export default function InvoicesScreen({
                 <button
                   type="button"
                   onClick={() => setMetricFilter("")}
-                  aria-label={lang === "es" ? "Quitar filtro del panel" : "Clear dashboard filter"}
+                  aria-label={t("invoices.clearDashboardFilter")}
                   style={{ ...clearButtonStyle, flexShrink: 0, whiteSpace: "nowrap" }}
                 >
                   {/* "Show all" implied there were matching invoices still
                       hidden. There are not -- this only drops the dashboard
                       filter -- so it says what it does. */}
-                  {lang === "es" ? "Quitar filtro" : "Clear filter"}
+                  {t("invoices.clearFilter")}
                 </button>
               </div>
             ) : null}
             <div style={invoiceSectionHeaderStyle}>
               <div style={{ display: "grid", gap: 4 }}>
                 <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
-                  {lang === "es" ? "Actividad de facturas" : "Invoices"}
+                  {t("invoices.invoices3")}
                 </div>
                 <div style={{ fontSize: 14.5, fontWeight: 850, color: "rgba(239,245,249,0.96)" }}>
                   {invoiceBoardSummary.visibleCount > 0
-                    ? `${invoiceBoardSummary.visibleCount} ${invoiceBoardSummary.visibleCount === 1 ? (lang === "es" ? "factura visible" : "visible invoice") : (lang === "es" ? "facturas visibles" : "visible invoices")}`
-                    : (lang === "es" ? "Sin facturas visibles" : "No visible invoices")}
+                    ? `${invoiceBoardSummary.visibleCount} ${invoiceBoardSummary.visibleCount === 1 ? (t("invoices.visibleInvoice")) : (t("invoices.visibleInvoices"))}`
+                    : (t("invoices.noVisibleInvoices"))}
                 </div>
               </div>
               <div style={{ fontSize: 12, lineHeight: 1.4, color: invoiceBoardSummary.nextAction.color }}>
@@ -3342,11 +3336,11 @@ export default function InvoicesScreen({
                 <div style={{ opacity: 0.68 }}>
                   <EmptyInvoiceIcon />
                 </div>
-                <div>{lang === "es" ? "Aún no hay facturas. Crea una factura manual o desde una estimación aprobada." : "No invoices yet. Create a manual invoice or convert an approved estimate."}</div>
+                <div>{t("invoices.noInvoicesYetCreateManualInvoice")}</div>
               </div>
             ) : filtered.length === 0 ? (
               <div style={{ opacity: 0.75, textAlign: "center" }}>
-                {lang === "es" ? "No hay facturas que coincidan." : "No matching invoices."}
+                {t("invoices.noMatchingInvoices2")}
               </div>
             ) : (
               filtered.map((invoice) => {
@@ -3406,9 +3400,9 @@ export default function InvoicesScreen({
                 const invoiceIdentityParts = [
                   invoiceIdentityTitle && invoiceIdentityTitle !== workTitle ? invoiceIdentityTitle : "",
                   invoiceNumberText,
-                  estimateNumberText ? `${t("estimateNumLabel")} ${estimateNumberText}` : "",
+                  estimateNumberText ? `${t("shell.estimateNumLabel")} ${estimateNumberText}` : "",
                   invoiceDate,
-                  dueDate ? `${lang === "es" ? "Vence" : "Due"} ${dueDate}` : "",
+                  dueDate ? `${t("invoices.due")} ${dueDate}` : "",
                   formatPaymentStatus(invoice?.paymentStatus, lang),
                 ].filter(Boolean);
                 const stripeSessionMeta = latestStripeSession ? getStripeSessionStateMeta(stripeSessionState, lang) : null;
@@ -3481,19 +3475,19 @@ export default function InvoicesScreen({
                       <div className="pe-estimate-card-header" style={invoiceCardTopStyle}>
                         <div className="pe-estimate-card-info" style={invoiceHeaderInfoStyle}>
                           <div style={invoicePrimaryLineStyle}>
-                            <div style={invoiceEyebrowStyle}>{lang === "es" ? "Actividad de facturas" : "Invoice"}</div>
+                            <div style={invoiceEyebrowStyle}>{t("invoices.invoice2")}</div>
                             <span className="pe-estimate-card-title" style={invoiceTitleStyle}>
-                              {workTitle || projectLabel || customerLabel || (lang === "es" ? "Trabajo sin título" : "Untitled Job")}
+                              {workTitle || projectLabel || customerLabel || (t("invoices.untitledJob"))}
                             </span>
                           </div>
                           <div className="pe-estimate-card-customer-row" style={invoiceCustomerProjectWrapStyle}>
                             {projectLabel ? (
                               <div style={invoiceProjectLineStyle}>
-                                {`${lang === "es" ? "Proyecto" : "Project"}: ${projectLabel}`}
+                                {`${t("invoices.project")}: ${projectLabel}`}
                               </div>
                             ) : null}
                             <div className="pe-estimate-card-customer" style={invoiceSecondaryLineStyle}>
-                              {customerLabel || (lang === "es" ? "Sin cliente" : "No customer")}
+                              {customerLabel || (t("invoices.noCustomer"))}
                             </div>
                             {siteAddr ? <div style={{ fontSize: 11.5, opacity: 0.52, lineHeight: 1.2, minWidth: 0 }}>{siteAddr}</div> : null}
                             <div style={invoiceDocLineStyle}>
@@ -3505,8 +3499,8 @@ export default function InvoicesScreen({
                             {dueDate ? (
                               <span style={{ fontWeight: 700, opacity: 0.82 }}>
                                 {derivedStatus === INVOICE_STATUSES.OVERDUE
-                                  ? <span style={{ color: "rgba(248,113,113,0.92)" }}>{lang === "es" ? "Venció" : "Due"} {dueDate}</span>
-                                  : <span>{lang === "es" ? "Vence" : "Due"} {dueDate}</span>}
+                                  ? <span style={{ color: "rgba(248,113,113,0.92)" }}>{t("invoices.due2")} {dueDate}</span>
+                                  : <span>{t("invoices.due")} {dueDate}</span>}
                               </span>
                             ) : null}
                           </div>
@@ -3551,60 +3545,60 @@ export default function InvoicesScreen({
                               textTransform: "uppercase",
                             }}
                           >
-                            {lang === "es" ? "Archivada" : "Archived"}
+                            {t("invoices.archived")}
                           </div>
                         ) : null}
                       </div>
                       <div style={invoiceSignalGridStyle}>
                         <div style={{ ...invoiceSignalCardStyle, border: `1px solid ${cardActionMeta.border}`, background: cardActionMeta.background }}>
-                          <div style={invoiceSignalLabelStyle}>{lang === "es" ? "Estado de pago" : "Payment Status"}</div>
+                          <div style={invoiceSignalLabelStyle}>{t("invoices.paymentStatus")}</div>
                           <div style={{ ...invoiceSignalValueStyle, color: cardActionMeta.color }}>{cardActionMeta.label}</div>
                           <div style={invoiceSignalMetaStyle}>{cardActionMeta.detail}</div>
                         </div>
                         <div style={invoiceSignalCardStyle}>
-                          <div style={invoiceSignalLabelStyle}>{lang === "es" ? "Vence" : "Due"}</div>
+                          <div style={invoiceSignalLabelStyle}>{t("invoices.due")}</div>
                           <div style={invoiceSignalValueStyle}>{dueDate || "—"}</div>
                           <div style={invoiceSignalMetaStyle}>
                             {derivedStatus === INVOICE_STATUSES.OVERDUE
-                              ? (lang === "es" ? "Cobro vencido" : "Past due")
+                              ? (t("invoices.pastDue2"))
                               : balanceRemaining > 0
                                 ? moneyUSD(balanceRemaining)
-                                : (lang === "es" ? "Liquidada" : "Settled")}
+                                : (t("invoices.settled"))}
                           </div>
                         </div>
                         <div style={invoiceSignalCardStyle}>
-                          <div style={invoiceSignalLabelStyle}>{lang === "es" ? "Actividad" : "Activity"}</div>
+                          <div style={invoiceSignalLabelStyle}>{t("invoices.activity")}</div>
                           <div style={invoiceSignalValueStyle}>{formatPaymentStatus(invoice?.paymentStatus, lang)}</div>
                           <div style={invoiceSignalMetaStyle}>
                             {stripeSessionMeta?.label
                               ? `${stripeSessionMeta.label}${customerLabel ? ` • ${customerLabel}` : ""}`
-                              : (customerLabel || (lang === "es" ? "Sin cliente vinculado" : "No linked customer"))}
+                              : (customerLabel || (t("invoices.noLinkedCustomer")))}
                           </div>
                         </div>
                       </div>
                       <div className="pe-estimate-card-metrics-wrap" style={invoiceMetricsWrapStyle}>
                         <div className="pe-estimate-card-metrics" style={invoiceMetricRowStyleLocal}>
                           <div style={invoiceMetricColumnStyleLocal}>
-                            <div style={invoiceMetricLabelStyle}>{lang === "es" ? "Total" : "Total"}</div>
+                            <div style={invoiceMetricLabelStyle}>{t("invoices.total3")}</div>
                             <div style={invoiceMetricPillStyleLocal(true)} title={labelRevenue}>
                               {moneyUSD(invoiceTotal)}
                             </div>
                           </div>
                           <div style={invoiceMetricColumnStyleLocal}>
-                            <div style={invoiceMetricLabelStyle}>{lang === "es" ? "Pagado" : "Paid"}</div>
-                            <div style={{ ...invoiceMetricPillStyleLocal(false), background: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.22)" }} title={lang === "es" ? "Pagado" : "Amount paid"}>
+                            <div style={invoiceMetricLabelStyle}>{t("invoices.paid")}</div>
+                            <div style={{ ...invoiceMetricPillStyleLocal(false), background: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.22)" }} title={t("invoices.amountPaid")}>
                               {moneyUSD(amountPaid)}
                             </div>
                           </div>
                           <div style={invoiceMetricColumnStyleLocal}>
-                            <div style={invoiceMetricLabelStyle}>{lang === "es" ? "Saldo" : "Balance"}</div>
-                            <div style={invoiceMetricPillStyleLocal(false)} title={lang === "es" ? "Saldo restante" : "Balance remaining"}>
+                            <div style={invoiceMetricLabelStyle}>{t("invoices.balance2")}</div>
+                            <div style={invoiceMetricPillStyleLocal(false)} title={t("invoices.balanceRemaining")}>
                               {moneyUSD(balanceRemaining)}
                             </div>
                           </div>
                           {invoiceMarginValue !== null ? (
                             <div style={invoiceMetricColumnStyleLocal}>
-                              <div style={invoiceMetricLabelStyle}>{lang === "es" ? "Margen" : "Margin"}</div>
+                              <div style={invoiceMetricLabelStyle}>{t("invoices.margin2")}</div>
                               <div style={invoiceMetricPillStyleLocal(false)} title={labelMargin}>
                                 {invoiceMarginValue.toFixed(1)}%
                               </div>
@@ -3629,7 +3623,7 @@ export default function InvoicesScreen({
                             onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "open", () => openInvoice(invoice))}
                             style={invoicePrimaryActionStyle}
                           >
-                            {lang === "es" ? "Abrir" : "Open"}
+                            {t("invoices.open3")}
                           </button>
                           {/* When the user drilled in on money owed, the next
                               step is almost always taking a payment. Lift the
@@ -3656,7 +3650,7 @@ export default function InvoicesScreen({
                             onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "details", () => toggleDetails(invoiceId))}
                             style={invoiceSecondaryActionStyle}
                           >
-                            {isOpen ? (lang === "es" ? "Ocultar" : "Hide") : (lang === "es" ? "Detalles" : "Details")}
+                            {isOpen ? (t("invoices.hide")) : (t("invoices.details"))}
                           </button>
                           {onOpenProjectDetail ? (
                             <button
@@ -3674,7 +3668,7 @@ export default function InvoicesScreen({
                                     window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
                                     return;
                                   }
-                                  writeStoredProjects(nextProjects);
+                                  await writeStoredProjects(nextProjects, { reason: "project_backfilled", source: "InvoicesScreen" });
                                   window.dispatchEvent(new Event("estipaid:projects-changed"));
                                 }
                                 if (target?.projectId) onOpenProjectDetail(target.projectId);
@@ -3701,36 +3695,36 @@ export default function InvoicesScreen({
                       <div style={{ display: "grid", gap: 10 }}>
                         <div style={invoiceDetailCardStyle}>
                           <div style={invoiceDetailLabelStyle}>
-                            {lang === "es" ? "Resumen" : "Summary"}
+                            {t("invoices.summary")}
                           </div>
                           <div style={{ display: "grid", gap: 6 }}>
                             <div style={invoiceSummaryRowStyle}>
-                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Tipo" : "Type"}</div>
+                              <div style={invoiceSummaryLabelStyle}>{t("invoices.type")}</div>
                               <div style={invoiceSummaryValueStyle}>{String(invoice?.invoiceType || "").toUpperCase() || "MANUAL"}</div>
                             </div>
                             <div style={invoiceSummaryRowStyle}>
-                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Total" : "Invoice total"}</div>
+                              <div style={invoiceSummaryLabelStyle}>{t("invoices.invoiceTotal")}</div>
                               <div style={invoiceSummaryValueStyle}>{moneyUSD(invoice?.invoiceTotal)}</div>
                             </div>
                             <div style={invoiceSummaryRowStyle}>
-                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Pagado" : "Amount paid"}</div>
+                              <div style={invoiceSummaryLabelStyle}>{t("invoices.amountPaid")}</div>
                               <div style={invoiceSummaryValueStyle}>{moneyUSD(invoice?.amountPaid)}</div>
                             </div>
                             <div style={invoiceSummaryRowStyle}>
-                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Saldo" : "Balance remaining"}</div>
+                              <div style={invoiceSummaryLabelStyle}>{t("invoices.balanceRemaining2")}</div>
                               <div style={invoiceSummaryValueStyle}>{moneyUSD(invoice?.balanceRemaining)}</div>
                             </div>
                             <div style={invoiceSummaryRowStyle}>
-                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Pago" : "Payment status"}</div>
+                              <div style={invoiceSummaryLabelStyle}>{t("invoices.paymentStatus2")}</div>
                               <div style={invoiceSummaryValueStyle}>{formatPaymentStatus(invoice?.paymentStatus, lang)}</div>
                             </div>
                             <div style={invoiceSummaryRowStyle}>
-                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Vence" : "Due date"}</div>
+                              <div style={invoiceSummaryLabelStyle}>{t("invoices.dueDate")}</div>
                               <div style={invoiceSummaryValueStyle}>{formatDateOnly(invoice?.dueDate) || "—"}</div>
                             </div>
                             {invoice?.sourceEstimateId ? (
                               <div style={invoiceSummaryRowStyle}>
-                                <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Estimación padre" : "Parent estimate"}</div>
+                                <div style={invoiceSummaryLabelStyle}>{t("invoices.parentEstimate")}</div>
                                 <div style={invoiceSummaryValueStyle}>{invoice?.estimateNumber || invoice?.sourceEstimateId}</div>
                               </div>
                             ) : null}
@@ -3779,9 +3773,9 @@ export default function InvoicesScreen({
                             }}
                           >
                             <div style={paymentConsoleMetricCardStyle}>
-                              <div style={paymentConsoleMetricLabelStyle}>{lang === "es" ? "Total" : "Invoice Total"}</div>
+                              <div style={paymentConsoleMetricLabelStyle}>{t("invoices.invoiceTotal2")}</div>
                               <div style={paymentConsoleMetricValueStyle}>{moneyUSD(invoiceTotal)}</div>
-                              <div style={paymentConsoleMetricMetaStyle}>{lang === "es" ? "Monto facturado" : "Original amount billed"}</div>
+                              <div style={paymentConsoleMetricMetaStyle}>{t("invoices.originalAmountBilled")}</div>
                             </div>
                             <div
                               style={{
@@ -3790,9 +3784,9 @@ export default function InvoicesScreen({
                                 border: amountPaid > 0 ? "1px solid rgba(34,197,94,0.18)" : paymentConsoleMetricCardStyle.border,
                               }}
                             >
-                              <div style={paymentConsoleMetricLabelStyle}>{lang === "es" ? "Pagado" : "Paid"}</div>
+                              <div style={paymentConsoleMetricLabelStyle}>{t("invoices.paid")}</div>
                               <div style={{ ...paymentConsoleMetricValueStyle, color: amountPaid > 0 ? "rgba(187,247,208,0.98)" : paymentConsoleMetricValueStyle.color }}>{moneyUSD(amountPaid)}</div>
-                              <div style={paymentConsoleMetricMetaStyle}>{amountPaid > 0 ? (lang === "es" ? "Cobrado hasta ahora" : "Collected so far") : (lang === "es" ? "Sin pagos registrados" : "No payment recorded yet")}</div>
+                              <div style={paymentConsoleMetricMetaStyle}>{amountPaid > 0 ? (t("invoices.collectedSoFar")) : (t("invoices.noPaymentRecordedYet"))}</div>
                             </div>
                             <div
                               style={{
@@ -3802,9 +3796,9 @@ export default function InvoicesScreen({
                                 gridColumn: isPhone ? "1 / -1" : "auto",
                               }}
                             >
-                              <div style={paymentConsoleMetricLabelStyle}>{lang === "es" ? "Saldo restante" : "Balance Remaining"}</div>
+                              <div style={paymentConsoleMetricLabelStyle}>{t("invoices.balanceRemaining3")}</div>
                               <div style={{ ...paymentConsoleMetricValueStyle, color: balanceRemaining > 0 ? "rgba(253,230,138,0.98)" : paymentConsoleMetricValueStyle.color }}>{moneyUSD(balanceRemaining)}</div>
-                              <div style={paymentConsoleMetricMetaStyle}>{balanceRemaining > 0 ? (lang === "es" ? "Monto pendiente por cobrar" : "Amount still owed") : (lang === "es" ? "Factura liquidada" : "Invoice fully settled")}</div>
+                              <div style={paymentConsoleMetricMetaStyle}>{balanceRemaining > 0 ? (t("invoices.amountStillOwed")) : (t("invoices.invoiceFullySettled"))}</div>
                             </div>
                           </div>
 
@@ -3816,15 +3810,11 @@ export default function InvoicesScreen({
                             }}
                           >
                             <div style={paymentConsoleActionCardStyle}>
-                              <div style={paymentConsoleActionTitleStyle}>{lang === "es" ? "Ruta manual" : "Manual payment path"}</div>
+                              <div style={paymentConsoleActionTitleStyle}>{t("invoices.manualPaymentPath")}</div>
                               <div style={paymentConsoleActionCopyStyle}>
                                 {canTakePayment
-                                  ? (lang === "es"
-                                    ? "Registra pagos manuales sin cambiar el flujo actual de la factura."
-                                    : "Record manual payments without changing the invoice flow.")
-                                  : (lang === "es"
-                                    ? "No hay cobros manuales principales disponibles para esta factura."
-                                    : "No primary manual collection action is available for this invoice.")}
+                                  ? (t("invoices.recordManualPaymentsWithoutChangingInvoice"))
+                                  : (t("invoices.noPrimaryManualCollectionActionAvailable"))}
                               </div>
                               <div style={paymentConsoleButtonGridStyle}>
                                 {canTakePayment ? (
@@ -3840,19 +3830,13 @@ export default function InvoicesScreen({
                             </div>
 
                             <div style={paymentConsoleActionCardStyle}>
-                              <div style={paymentConsoleActionTitleStyle}>{lang === "es" ? "Ruta Stripe" : "Stripe payment path"}</div>
+                              <div style={paymentConsoleActionTitleStyle}>{t("invoices.stripePaymentPath")}</div>
                               <div style={paymentConsoleActionCopyStyle}>
                                 {canUseStripe
-                                  ? (lang === "es"
-                                    ? "Envía al cliente a Stripe, reutiliza enlaces activos y sincroniza solo cuando Stripe confirme el cobro."
-                                    : "Send the customer to Stripe, reuse active links, and sync only after Stripe confirms payment.")
+                                  ? (t("invoices.sendCustomerStripeReuseActiveLinks"))
                                   : canTakePayment
-                                    ? (lang === "es"
-                                      ? "Conecta Stripe en Company Profile para aceptar pagos en línea."
-                                      : "Connect Stripe in Company Profile to accept online payments.")
-                                    : (lang === "es"
-                                      ? "No hay una acción activa de Stripe para esta factura."
-                                      : "There is no active Stripe collection action for this invoice.")}
+                                    ? (t("invoices.connectStripeCompanyProfileAcceptOnline"))
+                                    : (t("invoices.thereNoActiveStripeCollectionAction"))}
                               </div>
                               <div style={paymentConsoleButtonGridStyle}>
                                 {canUseStripe ? (
@@ -3863,8 +3847,8 @@ export default function InvoicesScreen({
                                     disabled={stripeCheckoutBusyId === invoiceId}
                                   >
                                     {stripeCheckoutBusyId === invoiceId
-                                      ? (lang === "es" ? "Generando Stripe..." : "Generating Stripe...")
-                                      : (lang === "es" ? "Pagar en línea con Stripe" : "Pay Online with Stripe")}
+                                      ? (t("invoices.generatingStripe"))
+                                      : (t("invoices.payOnlineStripe"))}
                                   </button>
                                 ) : null}
                                 {canUseStripe ? (
@@ -3875,8 +3859,8 @@ export default function InvoicesScreen({
                                     disabled={stripeCopyBusyId === invoiceId}
                                   >
                                     {stripeCopyBusyId === invoiceId
-                                      ? (lang === "es" ? "Copiando enlace..." : "Copying link...")
-                                      : (lang === "es" ? "Copiar enlace de pago" : "Copy Payment Link")}
+                                      ? (t("invoices.copyingLink"))
+                                      : (t("invoices.copyPaymentLink"))}
                                   </button>
                                 ) : null}
                                 {canCopyExistingStripeLink ? (
@@ -3887,8 +3871,8 @@ export default function InvoicesScreen({
                                     disabled={stripeCopyBusyId === invoiceId}
                                   >
                                     {stripeCopyBusyId === invoiceId
-                                      ? (lang === "es" ? "Copiando enlace..." : "Copying link...")
-                                      : (lang === "es" ? "Copiar enlace de Stripe existente" : "Copy Existing Stripe Link")}
+                                      ? (t("invoices.copyingLink"))
+                                      : (t("invoices.copyExistingStripeLink"))}
                                   </button>
                                 ) : null}
                                 {canSyncStripeSession ? (
@@ -3899,16 +3883,14 @@ export default function InvoicesScreen({
                                     disabled={stripeSyncBusyId === invoiceId}
                                   >
                                     {stripeSyncBusyId === invoiceId
-                                      ? (lang === "es" ? "Revisando Stripe..." : "Checking Stripe...")
-                                      : (lang === "es" ? "Revisar / sincronizar pago de Stripe" : "Check / Sync Stripe Payment")}
+                                      ? (t("invoices.checkingStripe"))
+                                      : (t("invoices.checkSyncStripePayment"))}
                                   </button>
                                 ) : null}
                               </div>
                               {canUseStripe ? (
                                 <div style={paymentConsoleInlineNoteStyle}>
-                                  {lang === "es"
-                                    ? "Los enlaces de Stripe expiran. Genera uno nuevo si el cliente paga después. Los pagos de Stripe deben conciliarse antes de registrarlos en EstiPaid."
-                                    : "Stripe links expire. Generate a fresh link if the customer pays later. Payment must still be reconciled in EstiPaid after Stripe confirms."}
+                                  {t("invoices.stripeLinksExpireGenerateFreshLink")}
                                 </div>
                               ) : null}
                             </div>
@@ -3927,7 +3909,7 @@ export default function InvoicesScreen({
                             >
                               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
                                 <div style={{ display: "grid", gap: 4 }}>
-                                  <div style={invoiceDetailLabelStyle}>{lang === "es" ? "Sesión de Stripe" : "Stripe Session"}</div>
+                                  <div style={invoiceDetailLabelStyle}>{t("invoices.stripeSession")}</div>
                                   <div style={{ fontSize: 15, fontWeight: 900, color: stripeSessionMeta.color }}>
                                     {stripeSessionMeta.label}
                                   </div>
@@ -3954,11 +3936,11 @@ export default function InvoicesScreen({
                                 }}
                               >
                                 <div style={{ display: "grid", gap: 4 }}>
-                                  <div style={paymentConsoleMetricLabelStyle}>{lang === "es" ? "Creada" : "Created"}</div>
+                                  <div style={paymentConsoleMetricLabelStyle}>{t("invoices.created")}</div>
                                   <div style={{ fontSize: 12.5, fontWeight: 700 }}>{formatDateTime(latestStripeSession.createdAt) || "—"}</div>
                                 </div>
                                 <div style={{ display: "grid", gap: 4 }}>
-                                  <div style={paymentConsoleMetricLabelStyle}>{lang === "es" ? "Expira" : "Expires"}</div>
+                                  <div style={paymentConsoleMetricLabelStyle}>{t("invoices.expires")}</div>
                                   <div style={{ fontSize: 12.5, fontWeight: 700 }}>
                                     {latestStripeSession.expiresAt ? (formatDateTime(Number(latestStripeSession.expiresAt || 0) * 1000) || "—") : "—"}
                                   </div>
@@ -3998,11 +3980,13 @@ export default function InvoicesScreen({
 
                           {paymentLedger.length ? (
                             <div style={invoiceDetailCardStyle}>
-                              <div style={invoiceDetailLabelStyle}>{lang === "es" ? "Historial de pagos" : "Payment Ledger"}</div>
+                              <div style={invoiceDetailLabelStyle}>{t("invoices.paymentLedger")}</div>
                               <div style={{ display: "grid", gap: 8 }}>
                                 {paymentLedger.map((payment) => (
                                   (() => {
                                     const isStripePayment = String(payment?.method || "").trim().toLowerCase() === "stripe";
+                                    const isEditingPaymentDate = paymentDateEditState?.invoiceId === String(invoice?.id || "").trim()
+                                      && paymentDateEditState?.paymentId === String(payment?.id || "").trim();
                                     const stripeSummary = isStripePayment ? getStripePaymentSummary(payment) : "";
                                     const receiptEmail = isStripePayment ? String(payment?.receiptEmail || "").trim() : "";
                                     const receiptUrl = isStripePayment && isSafeReceiptUrl(payment?.receiptUrl)
@@ -4042,6 +4026,38 @@ export default function InvoicesScreen({
                                             )}
                                           </div>
                                         </div>
+                                        {isEditingPaymentDate ? (
+                                          <div style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap" }}>
+                                            <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 700 }}>
+                                              Payment date
+                                              <input
+                                                type="date"
+                                                aria-label={`Payment date for ${String(payment?.id || "")}`}
+                                                className="pe-input"
+                                                value={paymentDateEditState.paidAt}
+                                                onChange={(event) => setPaymentDateEditState((current) => ({ ...current, paidAt: event.target.value }))}
+                                              />
+                                            </label>
+                                            <button type="button" className="pe-btn" onClick={savePaymentDate} disabled={paymentDateEditBusy}>
+                                              {paymentDateEditBusy ? "Saving..." : "Save Date"}
+                                            </button>
+                                            <button type="button" className="pe-btn pe-btn-ghost" onClick={closePaymentDateEditor} disabled={paymentDateEditBusy}>
+                                              Cancel
+                                            </button>
+                                          </div>
+                                        ) : !isStripePayment ? (
+                                          <button
+                                            type="button"
+                                            className="pe-btn pe-btn-ghost"
+                                            aria-label={`Edit payment date for ${String(payment?.id || "")}`}
+                                            onClick={() => openPaymentDateEditor(invoice, payment)}
+                                          >
+                                            Edit Date
+                                          </button>
+                                        ) : null}
+                                        {isEditingPaymentDate && paymentDateEditError ? (
+                                          <div role="alert" style={{ fontSize: 12, color: "rgba(248,113,113,0.96)" }}>{paymentDateEditError}</div>
+                                        ) : null}
                                         {payment?.note ? (
                                           <div style={{ fontSize: 12.5, opacity: 0.84 }}>
                                             {payment.note}
@@ -4064,7 +4080,7 @@ export default function InvoicesScreen({
                                             rel="noopener noreferrer"
                                             style={{ fontSize: 12, fontWeight: 700, color: "#93c5fd", textDecoration: "none" }}
                                           >
-                                            {lang === "es" ? "Ver recibo de Stripe" : "View Stripe receipt"}
+                                            {t("invoices.viewStripeReceipt")}
                                           </a>
                                         ) : null}
                                       </div>
@@ -4083,11 +4099,9 @@ export default function InvoicesScreen({
                             }}
                           >
                             <div style={paymentConsoleActionCardStyle}>
-                              <div style={paymentConsoleActionTitleStyle}>{lang === "es" ? "Acciones de factura" : "Invoice management"}</div>
+                              <div style={paymentConsoleActionTitleStyle}>{t("invoices.invoiceManagement")}</div>
                               <div style={paymentConsoleActionCopyStyle}>
-                                {lang === "es"
-                                  ? "Mantén el estado y la versión de la factura alineados con el trabajo real."
-                                  : "Keep the invoice state and version aligned with the real job status."}
+                                {t("invoices.keepInvoiceStateVersionAlignedReal")}
                               </div>
                               <div style={paymentConsoleButtonGridStyle}>
                                 <button
@@ -4096,7 +4110,7 @@ export default function InvoicesScreen({
                                   onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.SENT)}
                                   disabled={derivedStatus === INVOICE_STATUSES.SENT || derivedStatus === INVOICE_STATUSES.PAID || derivedStatus === INVOICE_STATUSES.VOID}
                                 >
-                                  {lang === "es" ? "Marcar enviada" : "Mark Sent"}
+                                  {t("invoices.markSent")}
                                 </button>
                                 <button
                                   className="pe-btn pe-btn-ghost"
@@ -4104,10 +4118,10 @@ export default function InvoicesScreen({
                                   onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.PAID)}
                                   disabled={derivedStatus === INVOICE_STATUSES.PAID || derivedStatus === INVOICE_STATUSES.VOID}
                                 >
-                                  {lang === "es" ? "Marcar pagada" : "Mark Paid"}
+                                  {t("invoices.markPaid")}
                                 </button>
                                 <button className="pe-btn pe-btn-ghost" type="button" onClick={() => duplicateInvoice(invoice)}>
-                                  {lang === "es" ? "Duplicar" : "Duplicate"}
+                                  {t("invoices.duplicate")}
                                 </button>
                               </div>
                             </div>
@@ -4120,12 +4134,10 @@ export default function InvoicesScreen({
                               }}
                             >
                               <div style={{ ...paymentConsoleActionTitleStyle, color: "rgba(254,202,202,0.98)" }}>
-                                {lang === "es" ? "Acciones protegidas" : "Protected actions"}
+                                {t("invoices.protectedActions")}
                               </div>
                               <div style={paymentConsoleActionCopyStyle}>
-                                {lang === "es"
-                                  ? "Mantén la anulación y el archivo separados del cobro para evitar errores."
-                                  : "Keep void and archive separated from collection actions to avoid mistakes."}
+                                {t("invoices.keepVoidArchiveSeparatedFromCollection")}
                               </div>
                               <div style={paymentConsoleButtonGridStyle}>
                                 <button
@@ -4134,10 +4146,10 @@ export default function InvoicesScreen({
                                   onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.VOID)}
                                   disabled={derivedStatus === INVOICE_STATUSES.VOID}
                                 >
-                                  {lang === "es" ? "Anular" : "Void"}
+                                  {t("invoices.void3")}
                                 </button>
                                 <button className="pe-btn pe-btn-ghost" type="button" onClick={() => archiveInvoice(invoice)}>
-                                  {invoice?.archived ? (lang === "es" ? "Restaurar factura" : "Restore Invoice") : (lang === "es" ? "Archivar factura" : "Archive Invoice")}
+                                  {invoice?.archived ? (t("invoices.restoreInvoice")) : (t("invoices.archiveInvoice"))}
                                 </button>
                               </div>
                             </div>
@@ -4156,7 +4168,7 @@ export default function InvoicesScreen({
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={lang === "es" ? "Registrar pago" : "Record payment"}
+          aria-label={t("invoices.recordPayment")}
           onClick={closePaymentModal}
           style={{
             position: "fixed",
@@ -4190,7 +4202,7 @@ export default function InvoicesScreen({
           >
             <div style={{ display: "grid", gap: 4 }}>
               <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: "0.2px" }}>
-                {lang === "es" ? "Registrar pago" : "Record payment"}
+                {t("invoices.recordPayment")}
               </div>
               <div style={{ fontSize: 13, opacity: 0.82 }}>
                 {[paymentModalState.projectName, paymentModalState.customerName, paymentModalState.invoiceNumber]
@@ -4199,15 +4211,15 @@ export default function InvoicesScreen({
               </div>
             </div>
             <div style={{ fontSize: 14, opacity: 0.92 }}>
-              {lang === "es" ? "Saldo pendiente" : "Remaining balance"}: <strong>{moneyUSD(paymentModalState.balanceRemaining)}</strong>
+              {t("invoices.remainingBalance")}: <strong>{moneyUSD(paymentModalState.balanceRemaining)}</strong>
             </div>
             <div style={{ display: "grid", gap: 10 }}>
               <div style={{ display: "grid", gap: 6 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{lang === "es" ? "Monto" : "Amount"}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{t("invoices.amount")}</div>
                 <input
                   type="text"
                   inputMode="decimal"
-                  aria-label={lang === "es" ? "Monto del pago" : "Payment amount"}
+                  aria-label={t("invoices.paymentAmount")}
                   className="pe-input"
                   value={paymentForm.amount}
                   onChange={(event) => {
@@ -4218,10 +4230,10 @@ export default function InvoicesScreen({
                 />
               </div>
               <div style={{ display: "grid", gap: 6 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{lang === "es" ? "Fecha de pago" : "Paid date"}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{t("invoices.paidDate")}</div>
                 <input
                   type="date"
-                  aria-label={lang === "es" ? "Fecha de pago" : "Paid date"}
+                  aria-label={t("invoices.paidDate")}
                   className="pe-input"
                   value={paymentForm.paidAt}
                   onChange={(event) => {
@@ -4231,9 +4243,9 @@ export default function InvoicesScreen({
                 />
               </div>
               <div style={{ display: "grid", gap: 6 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{lang === "es" ? "Método" : "Method"}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{t("invoices.method")}</div>
                 <select
-                  aria-label={lang === "es" ? "Método de pago" : "Payment method"}
+                  aria-label={t("invoices.paymentMethod")}
                   className="pe-select"
                   value={paymentForm.method}
                   onChange={(event) => {
@@ -4249,9 +4261,9 @@ export default function InvoicesScreen({
                 </select>
               </div>
               <div style={{ display: "grid", gap: 6 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{lang === "es" ? "Nota (opcional)" : "Note (optional)"}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{t("invoices.noteOptional")}</div>
                 <textarea
-                  aria-label={lang === "es" ? "Nota del pago" : "Payment note"}
+                  aria-label={t("invoices.paymentNote")}
                   className="pe-input"
                   value={paymentForm.note}
                   onChange={(event) => {
@@ -4259,7 +4271,7 @@ export default function InvoicesScreen({
                     setPaymentForm((current) => ({ ...current, note: event.target.value }));
                   }}
                   rows={3}
-                  placeholder={lang === "es" ? "Detalles del pago" : "Payment details"}
+                  placeholder={t("invoices.paymentDetails")}
                   style={{ resize: "vertical", minHeight: 88 }}
                 />
               </div>
@@ -4276,7 +4288,7 @@ export default function InvoicesScreen({
                 onClick={closePaymentModal}
                 disabled={paymentBusy}
               >
-                {lang === "es" ? "Cancelar" : "Cancel"}
+                {t("invoices.cancel")}
               </button>
               <button
                 type="button"
@@ -4285,8 +4297,8 @@ export default function InvoicesScreen({
                 disabled={paymentBusy}
               >
                 {paymentBusy
-                  ? (lang === "es" ? "Guardando..." : "Saving...")
-                  : (lang === "es" ? "Registrar pago" : "Record payment")}
+                  ? (t("invoices.saving"))
+                  : (t("invoices.recordPayment"))}
               </button>
             </div>
           </div>
@@ -4341,7 +4353,7 @@ export default function InvoicesScreen({
                 onClick={closeStatusConfirm}
                 disabled={statusConfirmBusy}
               >
-                {lang === "es" ? "Cancelar" : "Cancel"}
+                {t("invoices.cancel")}
               </button>
               <button
                 type="button"
@@ -4350,7 +4362,7 @@ export default function InvoicesScreen({
                 disabled={statusConfirmBusy}
               >
                 {statusConfirmBusy
-                  ? (lang === "es" ? "Actualizando..." : "Updating...")
+                  ? (t("invoices.updating"))
                   : statusConfirmState.confirmLabel}
               </button>
             </div>

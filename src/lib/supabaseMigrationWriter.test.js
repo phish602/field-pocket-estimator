@@ -5,9 +5,18 @@ jest.mock("./supabaseClient", () => ({
   getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
 }));
 
+// Only the ownership READ is stubbed. The fence comparator stays real so these
+// tests exercise the production generation check.
 jest.mock("./supabaseDeviceLock", () => ({
+  ...jest.requireActual("./supabaseDeviceLock"),
   ensureCurrentDeviceCanWriteCloud: (...args) => mockEnsureCurrentDeviceCanWriteCloud(...args),
 }));
+
+// The lease generation every default fixture operates under.
+const WRITER_FENCE = { companyId: "company_1", deviceId: "device-a", lockVersion: 5 };
+function writerAccessOk(fence = WRITER_FENCE) {
+  return { ok: true, access: { isActive: true, isLocked: false, fence }, error: "" };
+}
 
 const {
   isSupabaseMigrationPreviewReady,
@@ -237,7 +246,7 @@ describe("supabaseMigrationWriter", () => {
     mockGetSupabaseClient.mockReset();
     mockGetSupabaseClient.mockReturnValue(null);
     mockEnsureCurrentDeviceCanWriteCloud.mockReset();
-    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue(writerAccessOk());
   });
 
   test("preview readiness requires a successful preview", () => {
@@ -451,7 +460,7 @@ describe("supabaseMigrationWriter", () => {
     const mockClient = createMockClient();
     mockGetSupabaseClient.mockReturnValue(mockClient);
     mockEnsureCurrentDeviceCanWriteCloud
-      .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+      .mockResolvedValueOnce(writerAccessOk())
       .mockResolvedValueOnce({
         ok: false,
         code: "device_lock_lost",
@@ -2066,7 +2075,7 @@ describe("supabaseMigrationWriter cloud asset binding capture", () => {
     mockGetSupabaseClient.mockReset();
     mockGetSupabaseClient.mockReturnValue(null);
     mockEnsureCurrentDeviceCanWriteCloud.mockReset();
-    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue(writerAccessOk());
     localStorage.clear();
   });
 
@@ -2182,8 +2191,8 @@ describe("supabaseMigrationWriter cloud asset binding capture", () => {
     }));
     // First few access checks pass, then the device lock is lost.
     mockEnsureCurrentDeviceCanWriteCloud
-      .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
-      .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+      .mockResolvedValueOnce(writerAccessOk())
+      .mockResolvedValueOnce(writerAccessOk())
       .mockResolvedValue({ ok: false, access: { isActive: false, isLocked: true }, deviceLockLost: true, error: "Device lock lost." });
     const result = await runSupabaseMigrationWrite(bindingBackupInput());
     expect(result.ok).toBe(false);
@@ -2196,7 +2205,7 @@ describe("supabaseMigrationWriter customerless project (Gate 16D)", () => {
   beforeEach(() => {
     mockGetSupabaseClient.mockReset();
     mockEnsureCurrentDeviceCanWriteCloud.mockReset();
-    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue(writerAccessOk());
   });
 
   test("a customerless project is written with customer_id null while an assigned project keeps its customer", async () => {
@@ -2257,7 +2266,7 @@ describe("Gate 16F estimate write payload is unchanged by the shared contract re
       existingInvoiceRows: [], existingPaymentRows: [],
     });
     mockGetSupabaseClient.mockReturnValue(mockClient);
-    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true });
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue(writerAccessOk());
     const result = await runSupabaseMigrationWrite({
       storageSnapshot: buildStorageSnapshot({ estimates: [localEstimate], invoices: [] }),
       configured: true,
@@ -2317,5 +2326,108 @@ describe("Gate 16F estimate write payload is unchanged by the shared contract re
   test("carries a converted invoice legacy id into its own column", async () => {
     const rows = await writeEstimate({ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100, invoiceId: "inv_9" });
     expect(rows[0].converted_invoice_legacy_id).toBe("inv_9");
+  });
+});
+
+// START-FENCE: every destructive cloud call re-reads ownership immediately
+// before it mutates a business table, but that read only answered "am I active
+// now?". A(v5) -> B(v6) -> A(v7) answers yes while the rows being written come
+// from a local snapshot the newer generation has already superseded.
+describe("runSupabaseMigrationWrite START fence", () => {
+  const fenceA5 = { companyId: "company_1", deviceId: "device-a", lockVersion: 5 };
+  const fenceA7 = { companyId: "company_1", deviceId: "device-a", lockVersion: 7 };
+  const fenceB6 = { companyId: "company_1", deviceId: "device-b", lockVersion: 6 };
+
+  const writeArgs = () => ({
+    storageSnapshot: buildStorageSnapshot(),
+    configured: true,
+    user: { id: "user_1" },
+    company: { id: "company_1", name: "AAS Property Care" },
+    role: "owner",
+    backupDownloadAvailable: true,
+    preview: buildPreview(),
+  });
+
+  beforeEach(() => {
+    mockGetSupabaseClient.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
+  });
+
+  test("a same-owner heartbeat keeps the same generation and still writes", async () => {
+    // A heartbeat does not advance lockVersion, so every fresh read sees v5.
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue(writerAccessOk(fenceA5));
+
+    const result = await runSupabaseMigrationWrite(writeArgs());
+
+    expect(result.ok).toBe(true);
+    expect(mockClient.writeChains.customers.upsert).toHaveBeenCalled();
+  });
+
+  test("A(v5) -> B(v6) -> A(v7) cannot reach the first cloud upsert", async () => {
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+    mockEnsureCurrentDeviceCanWriteCloud
+      .mockResolvedValueOnce(writerAccessOk(fenceA5))
+      // Still this device, still reported active -- but a newer generation.
+      .mockResolvedValue(writerAccessOk(fenceA7));
+
+    const result = await runSupabaseMigrationWrite(writeArgs());
+
+    expect(result.ok).toBe(false);
+    expect(result.deviceLockLost).toBe(true);
+    // FORBIDDEN: no cloud row written under a superseded generation.
+    expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.projects.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.invoices.upsert).not.toHaveBeenCalled();
+  });
+
+  test("a takeover reported as still-active cannot reach the first cloud upsert", async () => {
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+    mockEnsureCurrentDeviceCanWriteCloud
+      .mockResolvedValueOnce(writerAccessOk(fenceA5))
+      .mockResolvedValue(writerAccessOk(fenceB6));
+
+    const result = await runSupabaseMigrationWrite(writeArgs());
+
+    expect(result.ok).toBe(false);
+    expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
+  });
+
+  test("the generation is re-proved between tables, not only once", async () => {
+    // Ownership moves AFTER customers are written. The remaining tables must
+    // not be written by the superseded generation.
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+    // Keyed off the actual upsert rather than a call index, so the test does
+    // not silently stop proving anything if a boundary is added or removed.
+    mockEnsureCurrentDeviceCanWriteCloud.mockImplementation(async () => (
+      mockClient.writeChains.customers.upsert.mock.calls.length > 0
+        ? writerAccessOk(fenceA7)
+        : writerAccessOk(fenceA5)
+    ));
+
+    const result = await runSupabaseMigrationWrite(writeArgs());
+
+    expect(result.ok).toBe(false);
+    expect(result.deviceLockLost).toBe(true);
+    // It genuinely reached the first mutation boundary before stopping.
+    expect(mockClient.writeChains.customers.upsert).toHaveBeenCalled();
+    // FORBIDDEN: everything after the generation changed.
+    expect(mockClient.writeChains.projects.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.invoices.upsert).not.toHaveBeenCalled();
+  });
+
+  test("an unprovable generation fails closed rather than writing", async () => {
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+
+    const result = await runSupabaseMigrationWrite(writeArgs());
+
+    expect(result.ok).toBe(false);
+    expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
   });
 });

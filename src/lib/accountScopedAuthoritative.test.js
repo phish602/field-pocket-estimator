@@ -305,9 +305,9 @@ test("a frozen runtime refuses every approved mutation without touching plaintex
   storage.setItem(`${NAMESPACE}:estipaid-customers-v1`, "plaintext-value");
   adapter.frozen = true;
 
-  facade.setItem("estipaid-customers-v1", "written-while-frozen");
-  facade.setItem("estipaid-projects-v1", "written-while-frozen");
-  facade.removeItem("estipaid-customers-v1");
+  expectRefusedMutation(() => facade.setItem("estipaid-customers-v1", "written-while-frozen"));
+  expectRefusedMutation(() => facade.setItem("estipaid-projects-v1", "written-while-frozen"));
+  expectRefusedMutation(() => facade.removeItem("estipaid-customers-v1"));
   facade.clear();
 
   // The cache is untouched ...
@@ -370,7 +370,7 @@ test("after lock or revocation no approved plaintext fallback is available", () 
   // A lock that leaves the adapter installed but unusable.
   adapter.revoked = true;
   expect(facade.getItem("estipaid-customers-v1")).toBeNull();
-  facade.setItem("estipaid-customers-v1", "written-after-lock");
+  expectRefusedMutation(() => facade.setItem("estipaid-customers-v1", "written-after-lock"));
   expect(storage.getItem(`${NAMESPACE}:estipaid-customers-v1`)).toBe("plaintext-value");
 
   // A full revocation uninstalls the adapter; approved business plaintext is
@@ -485,8 +485,8 @@ test("an authoritative workspace with no adapter never serves scoped plaintext",
   expect(keys).not.toContain("estipaid-customers-v1");
 
   // 14: no mutation reaches scoped plaintext.
-  facade.setItem("estipaid-customers-v1", "written-without-adapter");
-  facade.removeItem("estipaid-customers-v1");
+  expectRefusedMutation(() => facade.setItem("estipaid-customers-v1", "written-without-adapter"));
+  expectRefusedMutation(() => facade.removeItem("estipaid-customers-v1"));
   facade.clear();
   expect(storage.getItem(`${NAMESPACE}:estipaid-customers-v1`)).toBe("plaintext-value");
   expect(storage.getItem(`${NAMESPACE}:estipaid-vault-idle-lock-minutes`)).toBe("30");
@@ -518,10 +518,13 @@ test("a malformed guard fails closed without changing classified native keys", (
       "synthetic-third-party",
     ]));
 
-    facade.setItem("estipaid-customers-v1", "attempted-write");
-    facade.removeItem("estipaid-customers-v1");
     facade.clear();
   }).not.toThrow();
+
+  // A business mutation under a malformed guard is REFUSED, and the refusal is
+  // now loud. Failing closed silently is what this lane removed.
+  expectRefusedMutation(() => facade.setItem("estipaid-customers-v1", "attempted-write"));
+  expectRefusedMutation(() => facade.removeItem("estipaid-customers-v1"));
 
   expect(storage.getItem(plaintextKey)).toBe("plaintext-value");
   expect(facade.getItem("estipaid-vault-idle-lock-minutes")).toBe("30");
@@ -606,6 +609,12 @@ test("the migration source accessor is refused to a retained facade", () => {
 // REAL global installation and count native reads, so the proof does not depend
 // on a thrown RangeError or on timing.
 // ---------------------------------------------------------------------------
+
+// A protected business mutation that the authoritative vault cannot accept must
+// fail LOUDLY -- never report success while discarding the value.
+function expectRefusedMutation(run) {
+  expect(run).toThrow(expect.objectContaining({ code: "vault_mutation_not_ready", accepted: false }));
+}
 
 describe("the globally installed facade never re-enters itself for the guard", () => {
   let nativeGetItem;
@@ -754,10 +763,12 @@ describe("the globally installed facade never re-enters itself for the guard", (
         const keys = [];
         for (let index = 0; index < window.localStorage.length; index += 1) keys.push(window.localStorage.key(index));
         expect(keys).not.toContain("estipaid-customers-v1");
-        window.localStorage.setItem("estipaid-customers-v1", "attempted-write");
-        window.localStorage.removeItem("estipaid-customers-v1");
         window.localStorage.clear();
       }).not.toThrow();
+      // The refused business mutation is loud, and still re-reads the guard
+      // exactly once and never re-enters the facade.
+      expectRefusedMutation(() => window.localStorage.setItem("estipaid-customers-v1", "attempted-write"));
+      expectRefusedMutation(() => window.localStorage.removeItem("estipaid-customers-v1"));
       expect(guardReads).toBe(1);
       expect(facadeReentries).toBe(0);
       expect(nativeStorage.getItem(plaintextKey)).toBe("plaintext-value");

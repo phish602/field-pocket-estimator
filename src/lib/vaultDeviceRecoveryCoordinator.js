@@ -162,7 +162,21 @@ function buildDeviceOwnership(identity, verification) {
     activeDeviceId: asText(
       access?.activeDeviceState?.activeDeviceId
     ),
+    // The lease GENERATION. Without it, A(v5) -> B(v6) -> A(v7) fingerprints
+    // identically to A(v5): the same device owns the workspace in both, so a
+    // destructive reset planned before the handoff would still execute after
+    // it, against a workspace the newer generation has already changed.
+    lockVersion: normalizedLockVersion(access?.fence?.lockVersion ?? access?.activeDeviceState?.lockVersion),
   };
+}
+
+function normalizedLockVersion(value) {
+  // Number(null) and Number("") are both 0, so an ABSENT generation would
+  // otherwise normalize to the same value as a real generation 0 -- exactly the
+  // silent equality this fence exists to prevent. Absent stays absent.
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function ownershipFingerprint(ownership) {
@@ -171,6 +185,7 @@ function ownershipFingerprint(ownership) {
     active: ownership?.active === true,
     localDeviceId: asText(ownership?.localDeviceId),
     activeDeviceId: asText(ownership?.activeDeviceId),
+    lockVersion: normalizedLockVersion(ownership?.lockVersion),
   }));
 }
 
@@ -668,6 +683,33 @@ export async function executePreparedCurrentDeviceRecoveryReset({
           return blockedExecution(finalPlan.code);
         }
 
+        // The snapshot/preview step above is asynchronous, so the generation
+        // can move between the ownership check and the destructive call. Wiping
+        // the local vault is unrecoverable, so it is re-proved against the same
+        // intent immediately before the boundary rather than once, earlier.
+        let finalVerification;
+        try {
+          finalVerification = await dependencies.verifyDevice({
+            configured,
+            user,
+            company,
+            storage,
+            reason: "before_device_key_recovery_reset_commit",
+          });
+        } catch {
+          return blockedExecution(
+            VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.EVIDENCE_REFRESH_FAILED
+          );
+        }
+        if (
+          ownershipFingerprint(buildDeviceOwnership(identity, finalVerification))
+          !== intent.ownershipFingerprint
+        ) {
+          return blockedExecution(
+            VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.OWNERSHIP_CHANGED
+          );
+        }
+
         // A proof is consumed only by the held-lock execution that has passed
         // the final fresh authorization and is about to invoke local reset.
         preparedIntents.delete(normalizedProof);
@@ -855,6 +897,10 @@ export async function resumeCurrentDeviceRecoveryReset({
       }
       const identity = { userId, companyId, workspaceTag };
       const deviceOwnership = buildDeviceOwnership(identity, verification);
+      // The generation this continuation is authorised under. It is captured
+      // once and never refreshed: the first verified ownership IS the operation
+      // authority, so a later read can only confirm it, never replace it.
+      const startOwnershipFingerprint = ownershipFingerprint(deviceOwnership);
       if (typeof prepareFinalSnapshot === "function") {
         try {
           preparedSnapshot = await prepareFinalSnapshot({
@@ -913,6 +959,39 @@ export async function resumeCurrentDeviceRecoveryReset({
       ) {
         return blockedExecution(plan.code);
       }
+
+      // COMMIT BOUNDARY. Both evidence branches above (prepareFinalSnapshot and
+      // the preview fallback) are asynchronous and converge here, so a single
+      // proof protects both. Ownership can have moved -- including away and back
+      // to THIS device under a newer generation -- while they ran, and wiping
+      // the local vault is unrecoverable, so the starting generation is proved
+      // again immediately before the destructive call rather than once, earlier.
+      let commitVerification;
+      try {
+        commitVerification = await dependencies.verifyDevice({
+          configured,
+          user,
+          company,
+          storage,
+          reason: "before_resume_device_key_recovery_reset_commit",
+        });
+      } catch {
+        return blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.EVIDENCE_REFRESH_FAILED);
+      }
+      const commitOwnership = buildDeviceOwnership(identity, commitVerification);
+      // An ownership record with no generation proves nothing. Treating an
+      // absent lockVersion on both sides as "unchanged" would make the fence
+      // vanish exactly where it cannot be verified, so it fails closed instead.
+      // buildDeviceOwnership already normalized these to a finite number or null.
+      const generationProvable = deviceOwnership.lockVersion !== null
+        && commitOwnership.lockVersion !== null;
+      if (
+        !generationProvable
+        || ownershipFingerprint(commitOwnership) !== startOwnershipFingerprint
+      ) {
+        return blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.OWNERSHIP_CHANGED);
+      }
+
       try {
         const result = await dependencies.executeReset({
           identity,

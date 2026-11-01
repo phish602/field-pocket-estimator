@@ -16,6 +16,7 @@ import {
   primeConfiguredWorkspaceMocks,
   resetConfiguredTestWorkspace,
   activateConfiguredTestWorkspace,
+  ensureTestAuthoritativeRuntime,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
@@ -41,10 +42,14 @@ const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
 const useVaultIdleLock = require("./lib/useVaultIdleLock").default;
 
 function setup({ vault, runtime } = {}) {
+  const runtimeResult = runtime || buildReadyVaultRuntimeResult();
   primeConfiguredWorkspaceMocks();
   activateConfiguredTestWorkspace();
   useVaultSession.mockReturnValue(vault || buildUnlockedVaultSessionResult());
-  useVaultRuntimeActivation.mockReturnValue(runtime || buildReadyVaultRuntimeResult());
+  useVaultRuntimeActivation.mockReturnValue(runtimeResult);
+  if (runtimeResult.state === "ready" || runtimeResult.state === "pending-writes") {
+    ensureTestAuthoritativeRuntime();
+  }
 }
 
 afterEach(() => {

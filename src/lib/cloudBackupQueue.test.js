@@ -14,6 +14,9 @@ import {
   CLOUD_BACKUP_STATUS,
   applyCloudBackupResultToQueue,
   readPersistedCloudBackupQueueState,
+  CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
+  CLOUD_BACKUP_REVIEW_ORIGIN,
+  createEmptyCloudBackupQueueState, isInactiveWorkspaceBaselineQueue, buildWorkspaceBaselineRetiredQueue,
 } from "./cloudBackupQueue";
 
 beforeEach(() => {
@@ -145,7 +148,8 @@ describe("markCloudBackupDirty", () => {
       "priority", "createdAt", "updatedAt", "attempts", "lastAttemptAt",
       "lastError", "lastSuccessfulBackupAt", "lastVerifiedAt", "lastQueuedAt", "nextRetryAt",
       "retryCount", "localMutationRevision", "syncingRevision", "companyId", "activeDeviceId",
-      "lastErrorCode", "source", "documentId", "localFingerprint",
+      "lastErrorCode", "source", "documentId", "localFingerprint", "reviewOrigin", "supersededCompatibilityFailure",
+      "purpose", "compatibilityMaterializedRevision", "compatibilityMaterializedAt", "legacyCompatibilityEvidence",
     ]);
     Object.keys(parsed).forEach((key) => expect(allowedKeys.has(key)).toBe(true));
     expect(typeof parsed.documentId).toBe("string");
@@ -175,6 +179,29 @@ describe("markCloudBackupDirty", () => {
       reason: "",
       pausedAt: null,
     });
+  });
+
+  test("a new global mutation clears obsolete compatibility supersession metadata", () => {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+      ...readCloudBackupQueueState(),
+      supersededCompatibilityFailure: {
+        documentId: "est-2606",
+        mutationRevision: 4,
+        supersededAt: 1000,
+      },
+    }));
+    markCloudBackupDirty({
+      reason: "new_customer_save",
+      domains: ["customers"],
+      documentId: "customer-2",
+      companyId: "company-1",
+    });
+    expect(readCloudBackupQueueState()).toEqual(expect.objectContaining({
+      pending: true,
+      documentId: "customer-2",
+      companyId: "company-1",
+      supersededCompatibilityFailure: null,
+    }));
   });
 
   test("is safe to call repeatedly when localStorage is entirely unavailable", () => {
@@ -224,6 +251,40 @@ describe("readPersistedCloudBackupQueueState", () => {
       reasons: [], domains: [],
     }));
     expect(readPersistedCloudBackupQueueState(localStorage)).toEqual(expect.objectContaining({ ok: true, exists: true, state: expect.objectContaining({ companyId: "company-1", localMutationRevision: 4 }) }));
+  });
+
+  test.each(["conflict", "remote_changed"])("migrates a schema-v2 %s review to stable historical provenance without changing evidence", (status) => {
+    const legacy = {
+      schemaVersion: "2.0.0",
+      pending: true,
+      status,
+      reasons: ["invoice_saved"],
+      domains: ["invoices"],
+      companyId: "company-1",
+      localMutationRevision: 8,
+      syncingRevision: null,
+      lastError: "Preserved review evidence",
+      lastErrorCode: "identity_review_required",
+      documentId: "invoice-1",
+    };
+    localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify(legacy));
+
+    const first = readCloudBackupQueueState();
+    const persistedAfterFirstRead = localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
+    const second = readCloudBackupQueueState();
+
+    expect(first).toEqual(expect.objectContaining({
+      schemaVersion: CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
+      pending: true,
+      status,
+      reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.LEGACY_HISTORICAL_REVIEW,
+      lastError: legacy.lastError,
+      lastErrorCode: legacy.lastErrorCode,
+      documentId: legacy.documentId,
+      localMutationRevision: legacy.localMutationRevision,
+    }));
+    expect(second).toEqual(first);
+    expect(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE)).toBe(persistedAfterFirstRead);
   });
 
   test("fails closed for corrupt or wrong-schema persisted values", () => {
@@ -321,6 +382,48 @@ describe("recordCloudBackupAttemptFailure", () => {
   });
 });
 
+
+describe("historical baseline materialized compatibility provenance", () => {
+  const companyId = "test-company", proof = { companyId, startedAt: 5000, verifiedAt: 6000 };
+  const materialized = () => ({ ...createEmptyCloudBackupQueueState(), companyId,
+    status: "clean", pending: false, purpose: "legacy_compatibility", reviewOrigin: "current_sync_failure",
+    lastErrorCode: "identity_review_required", lastError: "Historical evidence", localMutationRevision: 28,
+    compatibilityMaterializedRevision: 28, compatibilityMaterializedAt: 2500,
+    legacyCompatibilityEvidence: { revision: 28, materializedMutationCount: 4 },
+    createdAt: 1000, updatedAt: 2500, lastAttemptAt: 2000, lastQueuedAt: 1500,
+    lastVerifiedAt: 3000, lastSuccessfulBackupAt: 3000, retryCount: 13 });
+  test("fully transferred provenance permits proof evaluation and is archived intact only by the proof builder", () => {
+    const before = materialized(), bytes = JSON.stringify(before);
+    expect(isInactiveWorkspaceBaselineQueue(before, { companyId, before: 5000 })).toBe(true);
+    const after = buildWorkspaceBaselineRetiredQueue(before, proof);
+    expect(after).toMatchObject({ pending: false, status: "clean", purpose: "none", reviewOrigin: "", lastErrorCode: "",
+      retryCount: 13, lastVerifiedAt: 3000, lastSuccessfulBackupAt: 3000, updatedAt: 2500, lastAttemptAt: 2000 });
+    expect(after.supersededCompatibilityFailure.previous).toEqual(before);
+    expect(JSON.stringify(before)).toBe(bytes); expect(localStorage.length).toBe(0);
+  });
+  test.each(["missing_materialization", "wrong_revision", "missing_evidence", "wrong_evidence_revision", "empty_transfer", "pending", "review", "conflict", "syncing", "backoff", "company", "identity", "new_work", "fresh_timestamp"])("%s remains a blocker", kind => {
+    const queue = materialized();
+    if (kind === "missing_materialization") queue.compatibilityMaterializedAt = null;
+    if (kind === "wrong_revision") queue.compatibilityMaterializedRevision = 27;
+    if (kind === "missing_evidence") delete queue.legacyCompatibilityEvidence;
+    if (kind === "wrong_evidence_revision") queue.legacyCompatibilityEvidence.revision = 27;
+    if (kind === "empty_transfer") queue.legacyCompatibilityEvidence.materializedMutationCount = 0;
+    if (kind === "pending") queue.pending = true;
+    if (kind === "review") queue.status = "remote_changed";
+    if (kind === "conflict") queue.status = "conflict";
+    if (kind === "syncing") queue.syncingRevision = 28;
+    if (kind === "backoff") queue.nextRetryAt = 4000;
+    if (kind === "company") queue.companyId = "other";
+    if (kind === "identity") queue.lastErrorCode = "company_mismatch";
+    if (kind === "new_work") queue.localMutationRevision += 1;
+    if (kind === "fresh_timestamp") queue.updatedAt = 5000;
+    const bytes = JSON.stringify(queue);
+    expect(isInactiveWorkspaceBaselineQueue(queue, { companyId, before: 5000 })).toBe(false);
+    expect(buildWorkspaceBaselineRetiredQueue(queue, proof)).toBeNull();
+    expect(JSON.stringify(queue)).toBe(bytes); expect(localStorage.length).toBe(0);
+  });
+});
+
 describe("markCloudBackupReviewRequired", () => {
   test("keeps local work pending but removes a permanent identity conflict from retry scheduling", () => {
     markCloudBackupDirty({ reason: "invoice_saved", domains: ["invoices"], severity: "money_critical" });
@@ -335,6 +438,7 @@ describe("markCloudBackupReviewRequired", () => {
       status: CLOUD_BACKUP_STATUS.CONFLICT,
       nextRetryAt: null,
       lastErrorCode: "identity_review_required",
+      reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.CURRENT_SYNC_FAILURE,
     }));
   });
 });
@@ -362,12 +466,14 @@ describe("applyCloudBackupResultToQueue (shared automatic + manual classifier)",
     expect(state.status).toBe(CLOUD_BACKUP_STATUS.REMOTE_CHANGED);
     expect(state.pending).toBe(true);
     expect(state.nextRetryAt).toBeNull();
+    expect(state.reviewOrigin).toBe(CLOUD_BACKUP_REVIEW_ORIGIN.CURRENT_SYNC_FAILURE);
   });
 
   test("a two-sided conflict maps to the conflict status", () => {
     markCloudBackupDirty(buildBackupDirtyEvent({ reason: "invoice_saved" }));
     applyCloudBackupResultToQueue({ permanentIdentityConflict: true, syncReviewState: "conflict", reason: "Cloud sync conflict." });
     expect(readCloudBackupQueueState().status).toBe(CLOUD_BACKUP_STATUS.CONFLICT);
+    expect(readCloudBackupQueueState().reviewOrigin).toBe(CLOUD_BACKUP_REVIEW_ORIGIN.CURRENT_SYNC_FAILURE);
   });
 
   test("a transient failure schedules a retry with backoff", () => {

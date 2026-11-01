@@ -102,6 +102,22 @@ describe("CASE 4 - non-empty core + pending queue -> BACKUP", () => {
     expect(resolveOperationOwnerFromCounts({ counts: nonEmptyCounts(), queueState: PENDING }))
       .toBe(CLOUD_OPERATION_OWNER.BACKUP);
   });
+
+  test("a terminal remote_changed review hands an established device to safe convergence", () => {
+    const queueState = { pending: true, status: "remote_changed", localMutationRevision: 7 };
+    expect(resolveOperationOwnerFromSnapshot({ snapshot: nonEmptySnapshot(), queueState }))
+      .toBe(CLOUD_OPERATION_OWNER.CONVERGENCE);
+    expect(resolveOperationOwnerFromCounts({ counts: nonEmptyCounts(), queueState }))
+      .toBe(CLOUD_OPERATION_OWNER.CONVERGENCE);
+  });
+
+  test("a terminal conflict review hands an established device to safe convergence", () => {
+    const queueState = { pending: true, status: "conflict", localMutationRevision: 7 };
+    expect(resolveOperationOwnerFromSnapshot({ snapshot: nonEmptySnapshot(), queueState }))
+      .toBe(CLOUD_OPERATION_OWNER.CONVERGENCE);
+    expect(resolveOperationOwnerFromCounts({ counts: nonEmptyCounts(), queueState }))
+      .toBe(CLOUD_OPERATION_OWNER.CONVERGENCE);
+  });
 });
 
 describe("CASES 5 & 6 - malformed core can never produce RECOVERY", () => {

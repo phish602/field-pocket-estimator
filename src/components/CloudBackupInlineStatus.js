@@ -9,49 +9,35 @@
 // without duplicating queue/worker logic -- only the copy and markup differ
 // per surface. Self-gates its own visibility; safe to render unconditionally.
 
-import useCloudBackupStatus from "../lib/useCloudBackupStatus";
+import useCloudBackupStatus, { CLOUD_PRODUCT_STATE } from "../lib/useCloudBackupStatus";
+import { useLanguage } from "../lib/i18n";
 
 export default function CloudBackupInlineStatus({ className, style } = {}) {
-  const { isSupabaseReady, hasCompany, userEmail, displayState, restoredRecently, queueState, chipState } = useCloudBackupStatus();
+  const { isSupabaseReady, hasCompany, userEmail, productState, productStatus } = useCloudBackupStatus();
+  // Both hooks must run before the visibility gates below, or the hook order
+  // changes between renders once this component starts returning early.
+  const { t } = useLanguage();
 
   if (!isSupabaseReady || !userEmail || !hasCompany) return null;
-  if (displayState === "none" && !restoredRecently) return null;
+  const text = productState === CLOUD_PRODUCT_STATE.SYNCING
+      ? t("cloud.inlineSyncing")
+      : productState === CLOUD_PRODUCT_STATE.SYNC_ISSUE
+        ? t("cloud.inlineNeedsAttention")
+        : productState === CLOUD_PRODUCT_STATE.PENDING
+          ? productStatus.pendingReason === "offline"
+            ? t("cloud.inlineWaitingConnection")
+            : productStatus.pendingReason === "retry"
+              ? t("cloud.inlineRetrying")
+              : t("cloud.inlineBackupPending")
+          : productState === CLOUD_PRODUCT_STATE.RESTORE_AVAILABLE
+            ? t("cloud.restore")
+            : productState === CLOUD_PRODUCT_STATE.CLOUD_OK
+              ? t("cloud.inlineUpToDate")
+              : t("cloud.connected");
 
-  // The persisted queue is the local source of truth for work that has not
-  // received verified cloud completion. Prefer it over a stale verification
-  // result so a just-saved profile never briefly reports "Cloud up to date".
-  const queueStatus = String(queueState?.status || "").trim();
-  const effectiveDisplayState = queueState?.pending
-    ? (displayState === "running" || queueStatus === "syncing"
-      ? "running"
-      : ["needs_attention", "remote_changed", "conflict"].includes(queueStatus)
-        ? "failed"
-        : "pending")
-    : displayState;
-
-  const text = restoredRecently
-    ? "Cloud backup restored"
-    : effectiveDisplayState === "running"
-      ? "Saved on this device · Syncing automatically"
-      : effectiveDisplayState === "failed"
-        ? chipState === "local_cloud_mismatch"
-          ? queueState?.status === "conflict"
-            ? "Saved on this device · Cloud sync conflict"
-            : "Saved on this device · Cloud changed elsewhere"
-          : queueState?.status === "conflict"
-            ? "Saved on this device · Cloud sync conflict"
-            : "Saved on this device · Sync needs attention"
-        : effectiveDisplayState === "pending"
-          ? queueState?.status === "offline_pending"
-            ? "Saved on this device · Waiting for connection"
-            : queueState?.status === "retry_wait"
-              ? "Saved on this device · Retrying cloud sync"
-              : "Saved on this device · Backup pending"
-          : "Saved on this device · Cloud up to date";
-
-  const color = restoredRecently || effectiveDisplayState === "current"
+  const color = productState === CLOUD_PRODUCT_STATE.CLOUD_OK || productState === CLOUD_PRODUCT_STATE.CLOUD_CONNECTED
     ? "rgba(187,247,208,0.88)"
-    : effectiveDisplayState === "failed"
+    : productState === CLOUD_PRODUCT_STATE.SYNC_ISSUE
       ? "rgba(253,224,71,0.92)"
       : "rgba(230,241,248,0.5)";
 

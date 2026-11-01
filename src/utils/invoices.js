@@ -5,13 +5,17 @@ import { DEFAULT_STATE } from "../estimator/defaultState";
 import { computeTotals } from "../estimator/engine";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { getDocumentEditTarget, resolveDocumentEditTarget } from "../lib/documentEditTarget";
-import { appendAuditEvents, createStoredAuditEvent } from "./auditStore";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { appendAuditEvents, buildAuditStorePayload, createStoredAuditEvent, readStoredAuditEvents } from "./auditStore";
+import { commitAtomicCloudQueuedBusinessMutation } from "../lib/cloudBackupQueue";
+import { CLOUD_MUTATION_ENTITY, CLOUD_MUTATION_OPERATION } from "../lib/cloudMutationLedger";
+import { buildCollectionCloudMutationPlan } from "../lib/businessCloudMutationOwners";
+import { buildEstimateCloudMutationPlan } from "../lib/estimateCloudMutationPlan";
+import { normalizeInvoiceContract } from "../lib/supabaseCloudConvergence";
+import { cloudSyncEqual } from "../lib/cloudSyncBaseline";
 import {
   backfillProjectCollections,
   createProjectRecord,
   readStoredProjects,
-  writeStoredProjects,
 } from "./projects";
 import {
   INVOICE_STATUSES,
@@ -88,6 +92,8 @@ function normalizeAdditionalChargeItems(items) {
       desc: asText(item?.desc || item?.description || item?.label),
       qty: item?.qty ?? "",
       priceEach: item?.priceEach ?? item?.charge ?? item?.amount ?? "",
+      ...(item?.kind === "additional_charge" ? { kind: "additional_charge" } : {}),
+      ...(thinSortOrder(item) !== null ? { sort_order: thinSortOrder(item) } : {}),
     }));
 }
 
@@ -679,13 +685,14 @@ function buildThinMaterialItem(item, index, kindOverride = "material") {
 // is preserved on the row so serialization re-emits it instead of silently
 // rewriting them into materials.
 function partitionThinInvoiceLineItems(source) {
-  const empty = { labor: [], materials: [], total: 0 };
+  const empty = { labor: [], materials: [], charges: [], total: 0 };
   if (hasStructuredInvoiceSections(source)) return empty;
   const lineItems = readThinInvoiceLineItems(source).filter(Boolean);
   if (lineItems.length === 0) return empty;
 
   const labor = [];
   const materials = [];
+  const charges = [];
   const legacyRows = [];
 
   lineItems.forEach((item, index) => {
@@ -702,6 +709,15 @@ function partitionThinInvoiceLineItems(source) {
       materials.push(buildThinMaterialItem(item, index));
       return;
     }
+    if (kind === "additional_charge") {
+      charges.push(withThinIdentity({
+        kind: "additional_charge",
+        desc: thinDescription(item),
+        qty: thinNumericField(item?.qty, item?.quantity),
+        priceEach: thinNumericField(item?.priceEach, item?.price, item?.unitPrice, item?.unit_price),
+      }, item, index, "invoice_charge"));
+      return;
+    }
     materials.push(buildThinMaterialItem(item, index, asText(item?.kind)));
   });
 
@@ -713,8 +729,58 @@ function partitionThinInvoiceLineItems(source) {
   return {
     labor,
     materials,
-    total: labor.length + materials.length,
+    charges,
+    total: labor.length + materials.length + charges.length,
   };
+}
+
+// A thin cloud-restored invoice carries its persisted parent total but none of
+// the cost fields the financial summary reads: its internal costs survive only
+// on the restored children (hours x trueRateInternal, qty x unitCostInternal).
+// Reading the summary from the thin record alone priced that missing cost as
+// zero, so a restored 33% invoice reported a 100% margin. Price the cost basis
+// from the rebuilt sections through the same engine that priced the original.
+// Revenue stays the persisted parent total, and a record that already carries
+// its own cost is left exactly as it is.
+function withThinRestoredCostBasis(source, thinSections, additionalChargeItems) {
+  const directCost = firstFiniteNumber(
+    source?.financials?.totalCost,
+    source?.totals?.totalCost,
+    source?.totalCost,
+    source?.internalCost
+  );
+  if (directCost !== null) return source;
+  try {
+    const sourceLabor = source?.labor && typeof source.labor === "object" ? source.labor : {};
+    const sourceMaterials = source?.materials && typeof source.materials === "object" ? source.materials : {};
+    const computed = computeTotals(toEstimatorState({
+      labor: {
+        hazardPct: DEFAULT_STATE?.labor?.hazardPct ?? 0,
+        riskPct: DEFAULT_STATE?.labor?.riskPct ?? 0,
+        multiplier: DEFAULT_STATE?.labor?.multiplier ?? 1,
+        ...sourceLabor,
+        lines: thinSections.labor,
+      },
+      materials: { ...sourceMaterials, items: thinSections.materials },
+      additionalCharges: { items: additionalChargeItems },
+      ui: { materialsMode: thinSections.materials.length > 0 ? "itemized" : resolveMaterialsMode(source) },
+    }));
+    const basis = buildFinancialSummaryFromComputed(computed);
+    return {
+      ...source,
+      financials: {
+        ...(source?.financials || {}),
+        totalCost: basis.totalCost,
+        laborRevenue: basis.laborRevenue,
+        laborCost: basis.laborCost,
+        materialsRevenue: basis.materialsRevenue,
+        materialsCost: basis.materialsCost,
+        additionalChargesRevenue: basis.additionalChargesRevenue,
+      },
+    };
+  } catch {
+    return source;
+  }
 }
 
 // Unchanged historical mapping for kind-less legacy thin rows. Preserved exactly
@@ -981,34 +1047,156 @@ export function readStoredInvoices() {
   }
 }
 
-export function writeStoredInvoices(invoices) {
-  const previousInvoices = readStoredInvoices();
-  // Promote BEFORE the project backfill and before legacy reconciliation, so
-  // both see the canonical id this write is committing to.
-  const next = promoteInvoiceCanonicalIdentity(
-    normalizeInvoiceList(invoices, resolveInvoiceNormalizationOptions())
-  );
-  const sync = backfillProjectCollections({
-    customers: readStoredCustomers(),
-    projects: readStoredProjects(),
-    invoices: next,
-  });
-  if (sync.changed) {
-    writeStoredProjects(sync.projects);
+function legacyInvoiceMatchesTarget(invoice, target) {
+  const normalizedTarget = asText(target);
+  if (!normalizedTarget) return false;
+  return collectInvoiceIdentityKeys(invoice).has(`id:${normalizedTarget}`)
+    || collectInvoiceIdentityKeys(invoice).has(`invoiceNumber:${normalizedTarget}`)
+    || collectInvoiceIdentityKeys(invoice).has(`docNumber:${normalizedTarget}`);
+}
+
+function invoiceMatchesLegacyRecord(invoice, legacyInvoice) {
+  const invoiceKeys = collectInvoiceIdentityKeys(invoice);
+  const legacyKeys = collectInvoiceIdentityKeys(legacyInvoice);
+  return [...invoiceKeys].some((key) => legacyKeys.has(key));
+}
+
+function buildInvoiceAtomicWrites(invoices, event = {}) {
+  // Compatibility reads can render old invoice-shaped Estimate records, but a
+  // normal Invoice mutation must never quietly promote or rewrite one. Only an
+  // explicit legacy edit names a migration target, which is then moved in the
+  // same durable batch as its canonical replacement.
+  const previousInvoices = normalizeInvoiceList(readStoredArray(INVOICES_KEY), resolveInvoiceNormalizationOptions());
+  const legacyInvoices = readLegacyEstimateInvoices();
+  const migrationTarget = asText(event?.migrateLegacyInvoiceTarget);
+  const migratableLegacyInvoices = migrationTarget
+    ? legacyInvoices.filter((invoice) => legacyInvoiceMatchesTarget(invoice, migrationTarget))
+    : [];
+  const normalInvoices = normalizeInvoiceList(invoices, resolveInvoiceNormalizationOptions())
+    .filter((invoice) => !legacyInvoices.some((legacyInvoice) => (
+      invoiceMatchesLegacyRecord(invoice, legacyInvoice)
+      && !migratableLegacyInvoices.some((migratable) => invoiceMatchesLegacyRecord(invoice, migratable))
+    )));
+  const next = promoteInvoiceCanonicalIdentity(normalInvoices);
+  const previousProjects = readStoredProjects();
+  const sync = backfillProjectCollections({ customers: readStoredCustomers(), projects: previousProjects, invoices: next });
+  const writes = [{ key: INVOICES_KEY, value: JSON.stringify(sync.invoices) }];
+  if (migratableLegacyInvoices.length > 0) {
+    const estimateRecords = readStoredArray(STORAGE_KEYS.ESTIMATES);
+    const nextEstimateRecords = estimateRecords.filter((record) => !migratableLegacyInvoices.some((legacyInvoice) => (
+      invoiceMatchesLegacyRecord(record, legacyInvoice)
+    )));
+    if (nextEstimateRecords.length !== estimateRecords.length) {
+      writes.push({ key: STORAGE_KEYS.ESTIMATES, value: JSON.stringify(nextEstimateRecords) });
+    }
   }
-  localStorage.setItem(INVOICES_KEY, JSON.stringify(sync.invoices));
-  reconcileLegacyEstimateInvoices(sync.invoices);
-  try {
-    const auditEvents = buildInvoiceAuditEvents(previousInvoices, sync.invoices);
-    if (auditEvents.length > 0) appendAuditEvents(auditEvents);
-  } catch {}
-  markCloudBackupDirty({
-    reason: "invoice_data_saved",
-    domains: ["invoices", "invoice_payments"],
-    severity: "money_critical",
-    source: "writeStoredInvoices",
+  if (sync.changed) writes.push({ key: STORAGE_KEYS.PROJECTS, value: JSON.stringify(sync.projects) });
+  const auditEvents = buildInvoiceAuditEvents(previousInvoices, sync.invoices);
+  if (auditEvents.length) writes.push({ key: STORAGE_KEYS.AUDIT_EVENTS, value: JSON.stringify(buildAuditStorePayload([...readStoredAuditEvents(), ...auditEvents])) });
+  return { previousInvoices, previousProjects, projects: sync.projects, projectChanged: sync.changed, invoices: sync.invoices, writes };
+}
+
+function buildInvoiceLedgerMutations(previousInvoices, nextInvoices, event = {}) {
+  const previousById = new Map((Array.isArray(previousInvoices) ? previousInvoices : []).map((invoice) => [asText(invoice?.id), invoice]));
+  const nextById = new Map((Array.isArray(nextInvoices) ? nextInvoices : []).map((invoice) => [asText(invoice?.id), invoice]).filter(([id]) => Boolean(id)));
+  const upserts = (Array.isArray(nextInvoices) ? nextInvoices : []).flatMap((invoice) => {
+    const documentId = asText(invoice?.id);
+    if (!documentId) return [];
+    const previous = previousById.get(documentId);
+    if (previous && cloudSyncEqual(normalizeInvoiceContract(previous), normalizeInvoiceContract(invoice))) return [];
+    return [{
+      companyId: asText(event?.companyId),
+      entityType: CLOUD_MUTATION_ENTITY.INVOICE,
+      documentId,
+      operation: CLOUD_MUTATION_OPERATION.UPSERT,
+      reason: asText(event?.reason) || "invoice_data_saved",
+      source: asText(event?.source) || "commitStoredInvoices",
+      payload: deepClone(invoice),
+    }];
   });
-  return sync.invoices;
+  const deletes = [...previousById.entries()].flatMap(([documentId]) => {
+    if (!documentId || nextById.has(documentId)) return [];
+    return [{
+      companyId: asText(event?.companyId),
+      entityType: CLOUD_MUTATION_ENTITY.INVOICE,
+      documentId,
+      operation: CLOUD_MUTATION_OPERATION.DELETE,
+      reason: asText(event?.reason) || "invoice_deleted",
+      source: asText(event?.source) || "commitStoredInvoices",
+      payload: { id: documentId, legacyLocalId: documentId },
+    }];
+  });
+  return [...deletes, ...upserts];
+}
+
+// Saving an invoice re-derives its project, which advances the project's local
+// activity clock (updatedAt) to the invoice's save time. That clock orders
+// projects on this device but is not part of the persisted cloud project row,
+// so an upsert whose only difference is updatedAt rewrites an identical row and
+// re-verifies it on every invoice save. Any other project change still queues.
+function projectChangedBeyondActivityClock(previous, next) {
+  if (!previous || !next) return true;
+  const { updatedAt: previousUpdatedAt, ...previousRest } = previous;
+  const { updatedAt: nextUpdatedAt, ...nextRest } = next;
+  return !cloudSyncEqual(previousRest, nextRest);
+}
+
+function buildInvoiceProjectLedgerMutations(plan, event = {}) {
+  if (!plan.projectChanged) return [];
+  const previousById = new Map((Array.isArray(plan.previousProjects) ? plan.previousProjects : [])
+    .map((project) => [asText(project?.id), project]));
+  return buildCollectionCloudMutationPlan({
+    previous: plan.previousProjects,
+    next: plan.projects,
+    entityType: CLOUD_MUTATION_ENTITY.PROJECT,
+    companyId: event?.companyId,
+    reason: "project_backfilled_from_invoice",
+    source: asText(event?.source) || "commitStoredInvoices",
+  }).mutations.filter((mutation) => (
+    mutation.operation !== CLOUD_MUTATION_OPERATION.UPSERT
+    || projectChangedBeyondActivityClock(previousById.get(asText(mutation.documentId)), mutation.payload)
+  ));
+}
+
+export async function commitStoredInvoices(invoices, event = {}) {
+  const plan = buildInvoiceAtomicWrites(invoices, event);
+  const additionalWrites = Array.isArray(event.additionalWrites) ? event.additionalWrites : [];
+  const writes = [...plan.writes, ...additionalWrites];
+  // Approval/conversion stages its estimate alongside the invoice. Cover that
+  // exact final post-state with the existing estimate diff in this SAME commit,
+  // ahead of its child invoice. Match the atomic owner's last-write-wins rule.
+  const estimateWrite = [...writes].reverse().find(write => write?.key === STORAGE_KEYS.ESTIMATES);
+  let estimateMutations = [];
+  if (estimateWrite) {
+    const previousRaw = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
+    const previousEstimates = previousRaw === null ? [] : JSON.parse(previousRaw);
+    const nextEstimates = JSON.parse(estimateWrite.value);
+    if (!Array.isArray(previousEstimates) || !Array.isArray(nextEstimates)) throw new Error("invalid_staged_estimates");
+    estimateMutations = buildEstimateCloudMutationPlan(previousEstimates, nextEstimates, event).mutations;
+  }
+  const ledgerMutations = [
+    ...estimateMutations,
+    ...buildInvoiceLedgerMutations(plan.previousInvoices, plan.invoices, event),
+    ...buildInvoiceProjectLedgerMutations(plan, event),
+  ];
+  const allWritesAlreadyStored = writes.every((write) => {
+    try { return localStorage.getItem(write.key) === write.value; } catch { return false; }
+  });
+  if (ledgerMutations.length === 0 && additionalWrites.length === 0 && allWritesAlreadyStored) {
+    return { ok: true, noOp: true, ledgerBacked: false, mutations: [], keys: [], invoices: plan.invoices };
+  }
+  const committed = await commitAtomicCloudQueuedBusinessMutation({
+    writes,
+    event: { reason: "invoice_data_saved", domains: ["invoices", "invoice_payments"], severity: "money_critical", source: "commitStoredInvoices", ...event },
+    ledgerMutations,
+    skipGlobalQueue: true,
+  });
+  return { ...committed, invoices: plan.invoices };
+}
+
+export async function writeStoredInvoices(invoices) {
+  const committed = await commitStoredInvoices(invoices, { source: "writeStoredInvoices" });
+  return committed.invoices;
 }
 
 export function buildEstimateInvoiceSnapshot(estimate) {
@@ -1164,10 +1352,13 @@ export function normalizeInvoiceRecord(record, options = {}) {
         ...buildEstimateInvoiceSnapshot(snapshot || {}),
       }
     : null;
-  const normalizedAdditionalCharges = normalizeAdditionalChargeItems(source?.additionalCharges?.items);
-  const financialSummary = extractFinancialSummaryFromDoc(source, {
-    approvedTotal: normalizedSnapshot?.approvedTotal ?? source?.approvedTotal ?? invoiceTotal,
-  });
+  const normalizedAdditionalCharges = normalizeAdditionalChargeItems(
+    thinSections.charges.length > 0 ? thinSections.charges : source?.additionalCharges?.items
+  );
+  const financialSummary = extractFinancialSummaryFromDoc(
+    hasThinChildren ? withThinRestoredCostBasis(source, thinSections, normalizedAdditionalCharges) : source,
+    { approvedTotal: normalizedSnapshot?.approvedTotal ?? source?.approvedTotal ?? invoiceTotal }
+  );
   const projectAddress = asText(
     source?.projectAddress
     || source?.customer?.projectAddress
@@ -1682,6 +1873,32 @@ export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, option
     return { ok: false, message: "This estimate has no remaining amount to invoice." };
   }
 
+  // Two cases bill something other than the whole estimate, and both are
+  // expressed the way this module already expresses a billable amount: the
+  // existing amount-based draft, which prices a blanket line the calculation
+  // engine reproduces exactly and allocates its financial summary to match.
+  // The full-estimate draft built below cannot represent either, because it
+  // carries the estimate's own labor and material lines and the engine
+  // recomputes those back to the approved total whatever invoiceTotal says.
+  //
+  // 1. The caller asked for a specific billing intent -- a deposit, a progress
+  //    draw, a dollar amount or a percent. That request is authoritative even
+  //    on a first invoice.
+  const requestedBilling = asText(options?.requestedValue);
+  const requestedType = asText(options?.invoiceType);
+  const hasExplicitBilling = !!requestedBilling
+    || (!!requestedType && requestedType.toLowerCase() !== INVOICE_TYPES.FINAL);
+
+  // 2. Part of the estimate is already invoiced, so only the remainder is
+  //    available. FINAL with no requested value resolves to
+  //    summary.remainingToInvoice.
+  if (hasExplicitBilling || summary.invoicedTotal > 0) {
+    return createInvoiceDraftFromEstimate(estimate, invoices, {
+      ...options,
+      invoiceType: requestedType || INVOICE_TYPES.FINAL,
+    });
+  }
+
   const now = Number(options?.nowTs) || Date.now();
   const invoiceNumber = asText(options?.invoiceNumber) || generateNextInvoiceNumber(invoices);
   const invoiceDate = normalizeIsoDate(options?.invoiceDate, todayISO());
@@ -1970,6 +2187,52 @@ export function addManualInvoicePayment(invoice, paymentInput = {}, options = {}
       ...source,
       status: isPaidInFull ? INVOICE_STATUSES.PAID : source.status,
       payments: [...payments, nextPayment],
+      updatedAt: now,
+      savedAt: now,
+      ts: now,
+    }),
+  };
+}
+
+function isValidDateOnly(value) {
+  const date = asText(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
+}
+
+export function updateManualInvoicePaymentDate(invoice, paymentId, paidAt, options = {}) {
+  const source = normalizeInvoiceRecord(invoice);
+  const id = asText(paymentId);
+  const date = asText(paidAt);
+  const now = Number(options?.nowTs) || Date.now();
+
+  if (!asText(source?.id)) {
+    return { ok: false, code: "invoice_missing", message: "Invoice identity is missing." };
+  }
+  if (!id) {
+    return { ok: false, code: "payment_missing", message: "Payment identity is missing." };
+  }
+  if (!isValidDateOnly(date)) {
+    return { ok: false, code: "invalid_paid_at", message: "Payment date must use YYYY-MM-DD." };
+  }
+
+  const payments = normalizePayments(source.payments);
+  const paymentIndex = payments.findIndex((payment) => payment.id === id);
+  if (paymentIndex < 0) {
+    return { ok: false, code: "payment_not_found", message: "Payment was not found on this invoice." };
+  }
+  if (String(payments[paymentIndex]?.method || "").trim().toLowerCase() === "stripe") {
+    return { ok: false, code: "stripe_payment", message: "Stripe payment dates are managed by Stripe." };
+  }
+
+  return {
+    ok: true,
+    invoice: normalizeInvoiceRecord({
+      ...source,
+      payments: payments.map((payment) => (
+        payment.id === id ? { ...payment, paidAt: date } : payment
+      )),
       updatedAt: now,
       savedAt: now,
       ts: now,

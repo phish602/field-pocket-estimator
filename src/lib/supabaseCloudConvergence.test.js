@@ -1,11 +1,15 @@
 jest.mock("./supabaseClient", () => ({ getSupabaseClient: jest.fn(() => null) }));
+jest.mock("./vaultRuntimeStore", () => ({ runtimeCommitAtomicRecords: jest.fn() }));
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
-import { buildCleanReplicaBootstrapProof, buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, normalizeInvoiceContract, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
+import { buildCleanReplicaBootstrapProof, buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, normalizeInvoiceContract, readCloudSyncConflictVault, recoverInterruptedCloudConvergence, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
 import { getSupabaseClient } from "./supabaseClient";
 import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
+import { LOCAL_DEVICE_ID_KEY } from "./supabaseDeviceLock";
+import { runtimeCommitAtomicRecords } from "./vaultRuntimeStore";
+import { readCloudMutationLedger } from "./cloudMutationLedger";
 
 const invoice = (id) => ({ id, customerId: "customer-1", projectId: "project-1", sourceEstimateId: "estimate-1", invoiceNumber: id, invoiceTotal: 10, amountPaid: 0, balanceRemaining: 10, status: "sent", paymentStatus: "unpaid", lineItems: [{ id: `${id}-line`, description: "Labor", quantity: 1, price: 10, total: 10 }], payments: [] });
 const baseLocal = () => ({ customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }], estimates: [{ id: "estimate-1", customerId: "customer-1", projectId: "project-1" }], invoices: [invoice("invoice-1")], companyProfile: null, settings: null, scopeTemplates: [] });
@@ -28,7 +32,7 @@ function setBaseline(snapshot) {
 }
 function setVerifiedCleanQueue(companyId = "company-1", revision = 0) {
   localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
-    schemaVersion: "2.0.0", pending: false, status: "clean", companyId,
+    schemaVersion: "4.0.0", pending: false, status: "clean", companyId,
     lastSuccessfulBackupAt: Date.now() - 1000, lastVerifiedAt: Date.now() - 500,
     localMutationRevision: revision, syncingRevision: null, retryCount: 0,
     nextRetryAt: null, lastError: "", lastErrorCode: "", reasons: [], domains: [],
@@ -39,7 +43,221 @@ function estimateEvidence(row, overrides = {}) {
   return { restorePayload: { schema: "estipaid.estimate.restore_payload", version: 1, legacyLocalId: row.id, estimate: row }, persisted: { legacy_local_id: row.id, customer_legacy_local_id: row.customerId, project_legacy_local_id: row.projectId }, lineItems: [], ...overrides };
 }
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => {
+  localStorage.clear();
+  runtimeCommitAtomicRecords.mockReset();
+  runtimeCommitAtomicRecords.mockImplementation(async (records) => {
+    records.forEach(({ logicalKey, value }) => localStorage.setItem(logicalKey, value));
+    return { ok: true };
+  });
+});
+
+function writeRollbackJournal({ companyId = "company-1", userId = "user-1", deviceId = "device-1", queueRevision = 0, previous = {} } = {}) {
+  localStorage.setItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL, JSON.stringify({
+    version: 1, companyId, userId, deviceId, queueRevision, previous,
+  }));
+}
+
+function recoveryContext(overrides = {}) {
+  return { storage: localStorage, companyId: "company-1", userId: "user-1", deviceId: "device-1", ...overrides };
+}
+
+test("a stale rollback journal is archived without erasing newer work and the same convergence can continue", async () => {
+  const current = {
+    ...baseLocal(),
+    estimates: [estimate("estimate-new")],
+    invoices: [{ ...invoice("invoice-new"), sourceEstimateId: "estimate-new" }],
+  };
+  setLocalSnapshot(current);
+  setVerifiedCleanQueue("company-1", 2);
+  localStorage.setItem(LOCAL_DEVICE_ID_KEY, "device-1");
+  const estimatesBefore = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
+  const invoicesBefore = localStorage.getItem(STORAGE_KEYS.INVOICES);
+  writeRollbackJournal({
+    queueRevision: 1,
+    previous: {
+      [STORAGE_KEYS.ESTIMATES]: JSON.stringify([estimate("estimate-before")]),
+      [STORAGE_KEYS.INVOICES]: JSON.stringify([invoice("invoice-before")]),
+    },
+  });
+
+  const result = recoverInterruptedCloudConvergence(recoveryContext());
+
+  expect(result).toEqual(expect.objectContaining({ ok: true, recovered: false, retired: true, code: "journal_revision_mismatch" }));
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBe(estimatesBefore);
+  expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(invoicesBefore);
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+  const vault = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT));
+  expect(vault.retiredJournals).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      classificationCode: "journal_revision_mismatch",
+      currentQueueRevision: 2,
+      journalQueueRevision: 1,
+      journal: expect.objectContaining({ previous: expect.objectContaining({
+        [STORAGE_KEYS.ESTIMATES]: expect.any(String),
+        [STORAGE_KEYS.INVOICES]: expect.any(String),
+      }) }),
+    }),
+  ]));
+
+  const sameState = { estimates: localStorage.getItem(STORAGE_KEYS.ESTIMATES), invoices: localStorage.getItem(STORAGE_KEYS.INVOICES) };
+  expect(recoverInterruptedCloudConvergence(recoveryContext())).toEqual({ ok: true, recovered: false });
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).retiredJournals).toHaveLength(1);
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBe(sameState.estimates);
+  expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(sameState.invoices);
+
+  const convergence = await runSupabaseCloudConvergence({
+    ...recoveryContext(),
+    configured: true,
+    user: { id: "user-1" },
+    company: { id: "company-1" },
+    cloudSnapshot: { ok: true, mapped: current, supplemental: { status: "missing" }, uuidMaps: {} },
+    verifyCloud: jest.fn(async () => ({ ok: true, allMatched: true, notices: [], blockers: [], repairs: [] })),
+  });
+  expect(convergence).toEqual(expect.objectContaining({ ok: true, status: "matched" }));
+});
+
+test("legacy invoices without estimateNumber converge when their linked estimate supplies the canonical number", () => {
+  const local = {
+    ...baseLocal(),
+    estimates: [estimate("estimate-1", { estimateNumber: "EST-2613" })],
+    invoices: [{ ...invoice("invoice-1"), estimateNumber: "" }],
+  };
+  const cloud = {
+    ...local,
+    invoices: [{ ...local.invoices[0], estimateNumber: "EST-2613" }],
+  };
+
+  const plan = buildCloudConvergencePlan({ local, cloud, baseline: local });
+
+  expect(plan.safe).toBe(true);
+  expect(plan.conflicts).toEqual([]);
+  expect(plan.replacements.invoices).toEqual([]);
+});
+
+test("ordinary conflict recording preserves prior retired-journal evidence", async () => {
+  const current = { ...emptySnapshot(), customers: [{ id: "customer-new", fullName: "Accepted newer work" }] };
+  const originalJournal = {
+    version: 1,
+    companyId: "company-1",
+    userId: "user-1",
+    deviceId: "device-1",
+    queueRevision: 1,
+    previous: {
+      [STORAGE_KEYS.CUSTOMERS]: JSON.stringify([{ id: "customer-before", fullName: "Before" }]),
+    },
+  };
+  setLocalSnapshot(current);
+  setVerifiedCleanQueue("company-1", 2);
+  localStorage.setItem(LOCAL_DEVICE_ID_KEY, "device-1");
+  const customersBefore = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
+  localStorage.setItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL, JSON.stringify(originalJournal));
+
+  expect(recoverInterruptedCloudConvergence(recoveryContext())).toEqual(expect.objectContaining({
+    ok: true,
+    recovered: false,
+    retired: true,
+    code: "journal_revision_mismatch",
+  }));
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+  expect(localStorage.getItem(STORAGE_KEYS.CUSTOMERS)).toBe(customersBefore);
+  const retiredVault = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT));
+  expect(retiredVault.retiredJournals).toHaveLength(1);
+  expect(retiredVault.retiredJournals[0].journal).toEqual(originalJournal);
+  const retiredEvidence = retiredVault.retiredJournals[0];
+
+  setBaseline({ customers: [{ id: "customer-new", fullName: "Baseline" }] });
+  const cloud = { ...emptySnapshot(), customers: [{ id: "customer-new", fullName: "Cloud conflict" }] };
+  const options = {
+    ...recoveryContext(),
+    configured: true,
+    user: { id: "user-1" },
+    company: { id: "company-1" },
+    cloudSnapshot: { ok: true, mapped: cloud, supplemental: { status: "missing" }, uuidMaps: { customers: { "customer-new": uuid(1) } } },
+  };
+
+  expect(await runSupabaseCloudConvergence(options)).toEqual(expect.objectContaining({ ok: false, status: "conflict" }));
+  let afterConflict = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT));
+  expect(afterConflict.entries).toEqual(expect.arrayContaining([
+    expect.objectContaining({ entityFamily: "customers", stableIdentity: "customer-new" }),
+  ]));
+  expect(afterConflict.retiredJournals).toHaveLength(1);
+  expect(afterConflict.retiredJournals[0]).toEqual(retiredEvidence);
+  expect(afterConflict.retiredJournals[0].journal).toEqual(originalJournal);
+
+  expect(await runSupabaseCloudConvergence(options)).toEqual(expect.objectContaining({ ok: false, status: "conflict" }));
+  afterConflict = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT));
+  expect(afterConflict.retiredJournals).toHaveLength(1);
+  expect(afterConflict.retiredJournals[0]).toEqual(retiredEvidence);
+  expect(afterConflict.retiredJournals[0].journal).toEqual(originalJournal);
+});
+
+test.each([
+  ["company", { companyId: "other-company" }, "journal_company_mismatch"],
+  ["user", { userId: "other-user" }, "journal_user_mismatch"],
+  ["device", { deviceId: "other-device" }, "journal_device_mismatch"],
+])("a %s-mismatched journal is archived without restoring business data", (_label, journalIdentity, expectedCode) => {
+  const current = { ...baseLocal(), estimates: [estimate("estimate-current")], invoices: [invoice("invoice-current")] };
+  setLocalSnapshot(current);
+  setVerifiedCleanQueue("company-1", 4);
+  localStorage.setItem(LOCAL_DEVICE_ID_KEY, "device-1");
+  const estimatesBefore = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
+  const invoicesBefore = localStorage.getItem(STORAGE_KEYS.INVOICES);
+  writeRollbackJournal({
+    ...journalIdentity,
+    queueRevision: 4,
+    previous: {
+      [STORAGE_KEYS.ESTIMATES]: JSON.stringify([estimate("estimate-before")]),
+      [STORAGE_KEYS.INVOICES]: JSON.stringify([invoice("invoice-before")]),
+    },
+  });
+
+  const result = recoverInterruptedCloudConvergence(recoveryContext());
+
+  expect(result).toEqual(expect.objectContaining({ ok: true, recovered: false, retired: true, code: expectedCode }));
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBe(estimatesBefore);
+  expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(invoicesBefore);
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).retiredJournals).toEqual(expect.arrayContaining([
+    expect.objectContaining({ classificationCode: expectedCode, journal: expect.objectContaining(journalIdentity) }),
+  ]));
+  expect(recoverInterruptedCloudConvergence(recoveryContext())).toEqual({ ok: true, recovered: false });
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).retiredJournals).toHaveLength(1);
+});
+
+test("a matching interrupted transaction still restores its prior snapshot", () => {
+  setLocalSnapshot({ ...baseLocal(), estimates: [estimate("estimate-current")], invoices: [invoice("invoice-current")] });
+  setVerifiedCleanQueue("company-1", 5);
+  localStorage.setItem(LOCAL_DEVICE_ID_KEY, "device-1");
+  const previousEstimates = JSON.stringify([estimate("estimate-before")]);
+  const previousInvoices = JSON.stringify([invoice("invoice-before")]);
+  writeRollbackJournal({
+    queueRevision: 5,
+    previous: {
+      [STORAGE_KEYS.ESTIMATES]: previousEstimates,
+      [STORAGE_KEYS.INVOICES]: previousInvoices,
+    },
+  });
+
+  const result = recoverInterruptedCloudConvergence(recoveryContext());
+
+  expect(result).toEqual(expect.objectContaining({ ok: true, recovered: true }));
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBe(previousEstimates);
+  expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(previousInvoices);
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+});
+
+test("an ambiguous journal remains active and blocking", () => {
+  setLocalSnapshot(baseLocal());
+  setVerifiedCleanQueue("company-1", 6);
+  writeRollbackJournal({ queueRevision: 6, previous: { [STORAGE_KEYS.INVOICES]: JSON.stringify([]) } });
+
+  const result = recoverInterruptedCloudConvergence({ storage: localStorage, companyId: "company-1" });
+
+  expect(result).toEqual(expect.objectContaining({ ok: false, code: "journal_recovery_context_missing" }));
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).not.toBeNull();
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).toBeNull();
+});
 
 test("no-baseline cloud-only invoice graph appends without changing existing local invoices", () => {
   const local = baseLocal(); const cloud = { ...baseLocal(), invoices: [invoice("invoice-1"), invoice("invoice-2")] };
@@ -95,7 +313,7 @@ describe("verified clean-replica bootstrap", () => {
     const cloud = { ...local, projects: [{ ...local.projects[0], notes: "canonical" }] };
     setLocalSnapshot(local); setVerifiedCleanQueue("company-1", 0);
     const verifyCloud = jest.fn(async () => ({ ok: true, allMatched: true, notices: [], blockers: [], repairs: [] }));
-    const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, cloudSnapshot: bootstrapSnapshot(cloud), verifyCloud });
+    const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, deviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, completionDeviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, cloudSnapshot: bootstrapSnapshot(cloud), verifyCloud });
     expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged", bootstrap: true, bootstrapReason: "verified_clean_replica", noCloudWritesPerformed: true }));
     expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS))).toEqual(cloud.projects);
     expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).snapshots.projects).toEqual(cloud.projects);
@@ -265,13 +483,18 @@ test("project cloud missing since baseline is an ineligible deletion ambiguity w
   expect(plan.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "projects", id: "p", code: "cloud_missing_since_baseline" })]));
 });
 
-test("a no-baseline mixed customer/project union skips immediate verification and keeps backup pending", async () => {
+test("a no-baseline mixed customer/project union appends exact local-only upserts without a global queue", async () => {
   const local = { ...emptySnapshot(), customers: [{ id: "local-c", fullName: "Local" }], projects: [{ id: "local-p", customerId: "local-c", projectName: "Local" }] };
   const cloud = { ...emptySnapshot(), customers: [{ id: "cloud-c", fullName: "Cloud" }], projects: [{ id: "cloud-p", customerId: "cloud-c", projectName: "Cloud" }] };
   setLocalSnapshot(local); const verifyCloud = jest.fn();
-  const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, deviceAccess: { ok: true }, cloudSnapshot: { ok: true, mapped: cloud, uuidMaps: { customers: { "cloud-c": uuid(6) }, projects: { "cloud-p": uuid(7) } }, supplemental: { status: "missing" } }, verifyCloud });
+  const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, deviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, cloudSnapshot: { ok: true, mapped: cloud, uuidMaps: { customers: { "cloud-c": uuid(6) }, projects: { "cloud-p": uuid(7) } }, supplemental: { status: "missing" } }, verifyCloud });
   expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged", localOnly: true, noCloudWritesPerformed: true }));
-  expect(verifyCloud).not.toHaveBeenCalled(); expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE)).pending).toBe(true);
+  expect(verifyCloud).not.toHaveBeenCalled();
+  expect(readCloudMutationLedger().entries).toEqual(expect.arrayContaining([
+    expect.objectContaining({ entityType: "customer", documentId: "local-c", operation: "upsert" }),
+    expect.objectContaining({ entityType: "project", documentId: "local-p", operation: "upsert" }),
+  ]));
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE)).toBeNull();
   expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CUSTOMERS))).toEqual([...local.customers, ...cloud.customers]);
 });
 
@@ -285,7 +508,12 @@ test("binding to a different existing customer row blocks and leaves active arra
 
 test("vault write failure restores the exact prior vault string and preserves customer/project arrays", async () => {
   const customer = { id: "c", fullName: "Private" }; setLocalSnapshot(emptySnapshot()); setBaseline({ customers: [customer] });
-  const priorVault = JSON.stringify({ version: 1, companyId: "company-1", entries: [{ key: "prior" }] }); localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, priorVault);
+  const priorVault = JSON.stringify({
+    version: 1,
+    companyId: "company-1",
+    entries: [{ key: "prior" }],
+    retiredJournals: [{ key: "retired-prior", classificationCode: "journal_revision_mismatch", journal: { version: 1, previous: { keep: "this evidence" } } }],
+  }); localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, priorVault);
   let failOnce = true;
   const storage = {
     getItem: (key) => localStorage.getItem(key), removeItem: (key) => localStorage.removeItem(key),
@@ -452,8 +680,8 @@ test("safe convergence writes only additive local storage and never calls cloud 
   localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify({}));
   const cloud = { ...baseLocal(), invoices: [invoice("invoice-1"), invoice("invoice-2")] };
   const result = await runSupabaseCloudConvergence({
-    storage: localStorage, configured: true, user: { id: "user-1" }, company: { id: "company-1" }, deviceAccess: { ok: true },
-    completionDeviceAccess: { ok: true },
+    storage: localStorage, configured: true, user: { id: "user-1" }, company: { id: "company-1" }, deviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } },
+    completionDeviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } },
     cloudSnapshot: { ok: true, mapped: cloud, uuidMaps: { invoices: { "invoice-2": "10000000-0000-4000-8000-000000000002" } }, supplemental: { status: "missing" } },
     verifyCloud: jest.fn(async () => ({ ok: true, allMatched: true, notices: [] })),
   });
@@ -472,7 +700,7 @@ test("failed strict cloud verification rolls back the exact prior invoice string
   localStorage.setItem(STORAGE_KEYS.SCOPE_TEMPLATES, JSON.stringify([]));
   localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify({}));
   const before = localStorage.getItem(STORAGE_KEYS.INVOICES);
-  const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "user-1" }, company: { id: "company-1" }, deviceAccess: { ok: true }, cloudSnapshot: { ok: true, mapped: { ...baseLocal(), invoices: [invoice("invoice-1"), invoice("invoice-2")] }, uuidMaps: {}, supplemental: { status: "missing" } }, verifyCloud: jest.fn(async () => ({ ok: false, allMatched: false, notices: [] })) });
+  const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "user-1" }, company: { id: "company-1" }, deviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, cloudSnapshot: { ok: true, mapped: { ...baseLocal(), invoices: [invoice("invoice-1"), invoice("invoice-2")] }, uuidMaps: {}, supplemental: { status: "missing" } }, verifyCloud: jest.fn(async () => ({ ok: false, allMatched: false, notices: [] })) });
   expect(result).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "cloud_verification_failed" }));
   expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(before);
 });
@@ -511,6 +739,73 @@ test("a no-write result reports matched only when strict verification passes", a
   const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, cloudSnapshot: snapshot, verifyCloud });
   expect(verifyCloud).toHaveBeenCalledTimes(1);
   expect(result).toEqual(expect.objectContaining({ ok: true, status: "matched", noWritesPerformed: true, localOnly: false }));
+});
+
+test("a strictly verified matched review clears only the exact historical queue revision", async () => {
+  const local = baseLocal();
+  setLocalSnapshot(local);
+  setBaseline(local);
+  setVerifiedCleanQueue("company-1", 7);
+  const queued = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
+  localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+    ...queued,
+    pending: true,
+    status: "conflict",
+  }));
+  const snapshot = { ok: true, mapped: local, estimateEvidence: { "estimate-1": estimateEvidence(local.estimates[0]) }, supplemental: { status: "missing" } };
+  const verifyCloud = jest.fn(async () => ({ ok: true, allMatched: true, notices: [], blockers: [], availableRepairs: [] }));
+  const fence = { companyId: "company-1", deviceId: "device-a", lockVersion: 5 };
+
+  const result = await runSupabaseCloudConvergence({
+    storage: localStorage,
+    configured: true,
+    user: { id: "u" },
+    company: { id: "company-1" },
+    cloudSnapshot: snapshot,
+    verifyCloud,
+    deviceAccess: { ok: true, access: { fence } },
+    completionDeviceAccess: { ok: true, access: { fence } },
+  });
+
+  expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged" }));
+  expect(verifyCloud).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE))).toEqual(expect.objectContaining({
+    pending: false,
+    status: "clean",
+    localMutationRevision: 7,
+  }));
+});
+
+test("a matched review whose strict verification fails keeps the historical queue unresolved", async () => {
+  const local = baseLocal();
+  setLocalSnapshot(local);
+  setBaseline(local);
+  setVerifiedCleanQueue("company-1", 7);
+  const queued = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
+  localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+    ...queued,
+    pending: true,
+    status: "conflict",
+  }));
+  const queueBefore = localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
+  const snapshot = { ok: true, mapped: local, estimateEvidence: { "estimate-1": estimateEvidence(local.estimates[0]) }, supplemental: { status: "missing" } };
+  const verifyCloud = jest.fn(async () => ({ ok: true, allMatched: false, notices: [], blockers: [], availableRepairs: [] }));
+  const fence = { companyId: "company-1", deviceId: "device-a", lockVersion: 5 };
+
+  const result = await runSupabaseCloudConvergence({
+    storage: localStorage,
+    configured: true,
+    user: { id: "u" },
+    company: { id: "company-1" },
+    cloudSnapshot: snapshot,
+    verifyCloud,
+    deviceAccess: { ok: true, access: { fence } },
+    completionDeviceAccess: { ok: true, access: { fence } },
+  });
+
+  expect(result).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "cloud_verification_failed" }));
+  expect(verifyCloud).toHaveBeenCalledTimes(1);
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE)).toBe(queueBefore);
 });
 
 function liveLocal() {
@@ -561,7 +856,7 @@ test("live stale-device fixture: the tenth cloud invoice imports atomically, exi
     supplemental: { status: "missing" },
   };
   const verifyCloud = jest.fn(async () => ({ ok: true, allMatched: true, notices: [], blockers: [], availableRepairs: [] }));
-  const ctx = { storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, verifyCloud };
+  const ctx = { storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, deviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, completionDeviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, verifyCloud };
 
   const firstInvoicesBefore = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
   const result = await runSupabaseCloudConvergence({ ...ctx, cloudSnapshot: snapshot });
@@ -737,7 +1032,7 @@ test("Gate 16B raw-cloud round trip: the tenth invoice survives snapshot mapping
   const before = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
   expect(before).toHaveLength(9);
 
-  const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
+  const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, completionDeviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
 
   // 7/8/9: strict (real) verification passed, no rollback, ten invoices remain.
   expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged", imported: 1, noCloudWritesPerformed: true }));
@@ -755,7 +1050,7 @@ test("Gate 16B raw-cloud round trip: the tenth invoice survives snapshot mapping
   expect(mutated).toBe(false);
 
   // 15: a second run is idempotent.
-  const second = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
+  const second = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, completionDeviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
   expect(second).toEqual(expect.objectContaining({ ok: true, status: "matched" }));
   expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(10);
 });
@@ -769,7 +1064,7 @@ test("Gate 16E verified clean replica: real raw snapshot replaces stale shared r
     ...nine.mapped,
     projects: nine.mapped.projects.map((project) => project.id === "proj-1" ? { ...project, notes: "legacy local note" } : project),
     estimates: nine.mapped.estimates.map((estimateRow) => ({ ...estimateRow, notes: "legacy local estimate note" })),
-    invoices: nine.mapped.invoices.map((invoiceRow) => ({ ...invoiceRow, lineItems: invoiceRow.lineItems.map((line) => ({ ...line, legacyChildMarker: true })) })),
+    invoices: nine.mapped.invoices.map((invoiceRow) => ({ ...invoiceRow, lineItems: invoiceRow.lineItems.map((line) => ({ ...line, description: `legacy ${line.description ?? ""}` })) })),
   };
   setLocalSnapshot(staleLocal);
   setVerifiedCleanQueue("company-1", 0);
@@ -777,14 +1072,14 @@ test("Gate 16E verified clean replica: real raw snapshot replaces stale shared r
   const snapshot = await readSupabaseCloudConvergenceSnapshot(ctx);
   const beforeIds = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES)).map((row) => row.id);
 
-  const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
+  const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, completionDeviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
 
   expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged", bootstrap: true, bootstrapReason: "verified_clean_replica", noCloudWritesPerformed: true }));
   const invoices = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
   expect(invoices).toHaveLength(10);
   expect(invoices.slice(0, 9).map((row) => row.id)).toEqual(beforeIds);
   expect(invoices.find((row) => row.id === "inv-10").lineItems).toHaveLength(6);
-  expect(invoices.every((row) => row.lineItems.every((line) => !line.legacyChildMarker))).toBe(true);
+  expect(invoices.every((row) => row.lineItems.every((line) => !String(line.description ?? "").startsWith("legacy ")))).toBe(true);
   expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).snapshots.invoices).toHaveLength(10);
   expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS)).bindings.invoice["inv-10"].cloudUuid).toBe(U.inv(10));
   expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
@@ -807,7 +1102,7 @@ test("Gate 16B raw-cloud round trip: a real semantic child mismatch rolls back t
   const corrupted = { ...raw, invoice_line_items: raw.invoice_line_items.map((r) => (r.id === "db-il-10-0" ? { ...r, description: "TAMPERED" } : r)) };
   getSupabaseClient.mockReturnValue(rawCloudClient(corrupted));
 
-  const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
+  const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, completionDeviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
   expect(result).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "cloud_verification_failed" }));
   // Exact rollback: nine invoices restored byte-for-byte.
   expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toEqual(before);
@@ -1014,7 +1309,7 @@ describe("Gate 16D customerless project relationship", () => {
     const dangling = { ...raw, projects: [...raw.projects, { id: uuid(77), legacy_local_id: "proj-bad", customer_id: uuid(88), project_number: "P-BAD", project_name: "Dangling" }] };
     getSupabaseClient.mockReturnValue(rawCloudClient(dangling));
 
-    const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, verifyCloud: runSupabaseCloudVerification });
+    const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, completionDeviceAccess: { ok: true, access: { fence: { companyId: "company-1", deviceId: "device-a", lockVersion: 5 } } }, verifyCloud: runSupabaseCloudVerification });
     expect(result.ok).toBe(false);
     expect(result.code).toBe("projects:orphan_customer");
     // No invoice imported; no local business-data write; no relationship guessed.
@@ -1121,7 +1416,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
 
   function setJuly10CleanQueue(companyId = "company-1", revision = 0) {
     localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
-      schemaVersion: "2.0.0", pending: false, status: "clean", companyId,
+      schemaVersion: "4.0.0", pending: false, status: "clean", companyId,
       lastSuccessfulBackupAt: JULY_10, lastVerifiedAt: JULY_10,
       localMutationRevision: revision, syncingRevision: null, retryCount: 0,
       nextRetryAt: null, lastError: "", lastErrorCode: "", reasons: [], domains: [],
@@ -1235,7 +1530,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
       // One estimate differs as a complete cloud document.
       estimates: nine.mapped.estimates.map((row) => row.id === "est-1" ? { ...row, notes: "legacy local estimate note" } : row),
       // Nine shared invoices carry the legacy local child representation.
-      invoices: nine.mapped.invoices.map((row) => ({ ...row, lineItems: row.lineItems.map((line) => ({ ...line, legacyChildMarker: true })) })),
+      invoices: nine.mapped.invoices.map((row) => ({ ...row, lineItems: row.lineItems.map((line) => ({ ...line, description: `legacy ${line.description ?? ""}` })) })),
     };
     setLocalSnapshot(staleLocal);
     return { nine, staleLocal };
@@ -1361,7 +1656,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
       // Existing identity order preserved; no local identity deleted.
       expect(invoicesAfter.slice(0, 9).map((row) => row.id)).toEqual(invoicesBefore.map((row) => row.id));
       // The stale shared records became complete cloud replacements.
-      expect(invoicesAfter.every((row) => row.lineItems.every((line) => !line.legacyChildMarker))).toBe(true);
+      expect(invoicesAfter.every((row) => row.lineItems.every((line) => !String(line.description ?? "").startsWith("legacy ")))).toBe(true);
       expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS)).find((row) => row.id === "proj-1").notes || "").not.toBe("legacy local note");
       expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).find((row) => row.id === "est-1").notes || "").not.toBe("legacy local estimate note");
 
@@ -1646,7 +1941,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
         ...nine.mapped,
         projects: nine.mapped.projects.map((p) => p.id === "proj-1" ? { ...p, notes: "legacy local note" } : p),
         estimates: nine.mapped.estimates.map((r) => r.id === "est-1" ? { ...r, notes: "legacy local estimate note" } : r),
-        invoices: nine.mapped.invoices.map((r) => ({ ...r, lineItems: r.lineItems.map((l) => ({ ...l, legacyChildMarker: true })) })),
+        invoices: nine.mapped.invoices.map((r) => ({ ...r, lineItems: r.lineItems.map((l) => ({ ...l, description: `legacy ${l.description ?? ""}` })) })),
       };
       setLocalSnapshot(staleLocal);
       // The real, untouched images live in company profile + scope templates.
@@ -1725,7 +2020,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
 
       expect(result).toEqual(expect.objectContaining({
         ok: true, status: "converged", bootstrap: true, bootstrapReason: "verified_clean_replica",
-        queueSchemaBefore: "1.0.0", queueSchemaAfter: "2.0.0", pauseRecovered: true, noCloudWritesPerformed: true,
+        queueSchemaBefore: "1.0.0", queueSchemaAfter: "4.0.0", pauseRecovered: true, noCloudWritesPerformed: true,
       }));
 
       // 10 invoices with all six children.
@@ -1751,7 +2046,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
       // Queue v2 clean, pause gone, journal gone, vault intact.
       const queue = readPersistedCloudBackupQueueState(localStorage);
       expect(queue.ok).toBe(true);
-      expect(queue.state).toEqual(expect.objectContaining({ schemaVersion: "2.0.0", status: "clean", pending: false }));
+      expect(queue.state).toEqual(expect.objectContaining({ schemaVersion: "4.0.0", status: "clean", pending: false }));
       expect(localStorage.getItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE)).toBeNull();
       expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
       expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).entries).toHaveLength(22);
@@ -1845,7 +2140,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
       // is preserved -- eligibility is never bought by erasing diagnostics.
       const queueAfter = readPersistedCloudBackupQueueState(localStorage);
       expect(queueAfter.ok).toBe(true);
-      expect(queueAfter.state).toEqual(expect.objectContaining({ schemaVersion: "2.0.0", status: "clean", pending: false }));
+      expect(queueAfter.state).toEqual(expect.objectContaining({ schemaVersion: "4.0.0", status: "clean", pending: false }));
       expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS)).bindings.invoice["inv-10"].cloudUuid).toBe(L.inv(10));
       expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).entries).toHaveLength(22);
       // The compaction is reported, not silent.
@@ -1970,14 +2265,14 @@ describe("Gate 16F/16G live-shaped device replay", () => {
 
       const result = migrateLegacyPersistedCloudBackupQueue({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess });
 
-      expect(result).toEqual(expect.objectContaining({ ok: true, migrated: true, schemaBefore: "1.0.0", schemaAfter: "2.0.0" }));
+      expect(result).toEqual(expect.objectContaining({ ok: true, migrated: true, schemaBefore: "1.0.0", schemaAfter: "4.0.0" }));
       expect(result.previousRaw).toBe(before);
 
       // 3/4: a real, readable schema-v2 clean queue.
       const read = readPersistedCloudBackupQueueState(localStorage);
       expect(read.ok).toBe(true);
       expect(read.state).toEqual(expect.objectContaining({
-        schemaVersion: "2.0.0", status: "clean", pending: false,
+        schemaVersion: "4.0.0", status: "clean", pending: false,
         syncingRevision: null, retryCount: 0, nextRetryAt: null,
         lastError: "", lastErrorCode: "", localMutationRevision: 0,
         companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID,
@@ -2043,7 +2338,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
         // 2/7/10/11: the metadata recovered, then bootstrap carried the run.
         expect(converged).toEqual(expect.objectContaining({
           ok: true, status: "converged", stage: "completed", code: "", bootstrapCode: "", conflictCount: 0,
-          metadataRecoveryStage: "completed", queueSchemaBefore: "1.0.0", queueSchemaAfter: "2.0.0",
+          metadataRecoveryStage: "completed", queueSchemaBefore: "1.0.0", queueSchemaAfter: "4.0.0",
           pauseReason: "device_takeover", pauseRecovered: true, noCloudWritesPerformed: true,
         }));
         expect(converged.conflictSummary).toEqual([]);
@@ -2052,7 +2347,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
         const queueAfter = readPersistedCloudBackupQueueState(localStorage);
         expect(queueAfter.ok).toBe(true);
         expect(queueAfter.state).toEqual(expect.objectContaining({
-          schemaVersion: "2.0.0", status: "clean", pending: false, syncingRevision: null,
+          schemaVersion: "4.0.0", status: "clean", pending: false, syncingRevision: null,
           retryCount: 0, localMutationRevision: 0, companyId: "company-1",
         }));
 
@@ -2073,7 +2368,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
         // 16. No local identity deleted; existing order preserved.
         expect(invoicesAfter.slice(0, 9).map((row) => row.id)).toEqual(invoicesBefore.map((row) => row.id));
         // 12. Stale shared records became complete cloud replacements.
-        expect(invoicesAfter.every((row) => row.lineItems.every((line) => !line.legacyChildMarker))).toBe(true);
+        expect(invoicesAfter.every((row) => row.lineItems.every((line) => !String(line.description ?? "").startsWith("legacy ")))).toBe(true);
 
         // 17/18: bindings captured and baseline captured + read back.
         const bindings = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS)).bindings;
@@ -2366,4 +2661,311 @@ describe("Gate 16F/16G live-shaped device replay", () => {
     });
   });
 
+});
+
+// START-FENCE: the completion guard must prove the SAME generation the
+// transaction began under. Proving the device is merely ACTIVE at completion is
+// satisfied by A(v5) -> B(v6) -> A(v7), which would let a stale transaction
+// capture a baseline, clear the queue and remove the journal.
+//
+// This reuses the live stale-device fixture so the run genuinely reaches the
+// completion guard (strict verification is invoked) rather than exiting early.
+function fenceAt(lockVersion) {
+  return { companyId: "company-1", deviceId: "device-a", lockVersion };
+}
+
+function convergenceRaceContext({ startVersion, completionFence }) {
+  const local = liveLocal();
+  setLocalSnapshot(local);
+  setBaseline(local);
+
+  const cloudInvoice10 = {
+    ...invoice("inv-10"), customerId: "cust-1", projectId: "proj-1", sourceEstimateId: "", invoiceNumber: "INV-10",
+    lineItems: Array.from({ length: 6 }, (_, j) => ({ id: `inv-10-line-${j}`, description: `Line ${j}`, quantity: 1, price: 10 + j, total: 10 + j })),
+    payments: [],
+  };
+  const snapshot = {
+    ok: true,
+    mapped: { ...local, invoices: [...local.invoices, cloudInvoice10] },
+    estimateEvidence: liveEstimateEvidence(local.estimates),
+    supplemental: { status: "missing" },
+  };
+  const verifyCloud = jest.fn(async () => ({ ok: true, allMatched: true, notices: [], blockers: [], availableRepairs: [] }));
+
+  return {
+    verifyCloud,
+    invoicesBefore: JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES)),
+    args: {
+      storage: localStorage,
+      configured: true,
+      user: { id: "u" },
+      company: { id: "company-1" },
+      deviceAccess: { ok: true, access: { fence: fenceAt(startVersion) } },
+      completionDeviceAccess: { ok: true, access: { fence: completionFence } },
+      cloudSnapshot: snapshot,
+      verifyCloud,
+    },
+  };
+}
+
+test("convergence START fence: a stable generation still converges", async () => {
+  const ctx = convergenceRaceContext({ startVersion: 5, completionFence: fenceAt(5) });
+
+  const result = await runSupabaseCloudConvergence(ctx.args);
+
+  expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged" }));
+  expect(ctx.verifyCloud).toHaveBeenCalledTimes(1);
+  // The counterpart of the stale-generation proof: the SAME generation DOES
+  // reach captureVerifiedCloudSyncBaseline, so verifiedAt/hashes are stamped.
+  const { readCloudSyncBaseline } = require("./cloudSyncBaseline");
+  const baselineAfter = readCloudSyncBaseline("company-1", localStorage);
+  expect(typeof baselineAfter.verifiedAt).toBe("string");
+  expect(baselineAfter.hashes).toBeTruthy();
+});
+
+test("convergence START fence: A(v5) -> B(v6) -> A(v7) cannot finalize", async () => {
+  // Same device is active again, but under a NEWER generation.
+  const ctx = convergenceRaceContext({ startVersion: 5, completionFence: fenceAt(7) });
+
+  const result = await runSupabaseCloudConvergence(ctx.args);
+
+  // It reached the completion guard: strict verification actually ran.
+  expect(ctx.verifyCloud).toHaveBeenCalledTimes(1);
+  expect(result.status).not.toBe("converged");
+  expect(result.ok).toBe(false);
+
+  // FORBIDDEN SIDE EFFECTS must all be absent. The raw bytes DO change even on
+  // the blocked path: compactStoredCloudSyncBaseline rewrites the pre-seeded
+  // baseline into digest form unconditionally, and that rewrite is
+  // information-preserving. The real proof is that no VERIFIED baseline was
+  // captured -- only captureVerifiedCloudSyncBaseline stamps verifiedAt/hashes.
+  const { readCloudSyncBaseline } = require("./cloudSyncBaseline");
+  const baselineAfter = readCloudSyncBaseline("company-1", localStorage);
+  expect(baselineAfter.verifiedAt).toBeUndefined();
+  expect(baselineAfter.hashes).toBeUndefined();
+  // The local state rolled back: the tenth invoice was not kept.
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toEqual(ctx.invoicesBefore);
+});
+
+test("convergence START fence: a takeover by another device cannot finalize", async () => {
+  const ctx = convergenceRaceContext({
+    startVersion: 5,
+    completionFence: { companyId: "company-1", deviceId: "device-b", lockVersion: 6 },
+  });
+
+  const result = await runSupabaseCloudConvergence(ctx.args);
+
+  expect(result.status).not.toBe("converged");
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toEqual(ctx.invoicesBefore);
+});
+
+// READ-ONLY conflict-vault accessor. The evidence recordConflicts() persists was
+// reachable only through module-private readRaw, so a gated UI had no legitimate
+// way to inspect it. This accessor must read and do absolutely nothing else.
+describe("readCloudSyncConflictVault", () => {
+  const entry = {
+    key: "company-1:invoices:inv-1:h",
+    entityFamily: "invoices",
+    stableIdentity: "inv-1",
+    classificationCode: "both_changed_conflict",
+    baselineSnapshot: { id: "inv-1" },
+    baselineHash: "h0",
+    localSnapshot: { id: "inv-1", status: "sent" },
+    cloudSnapshot: { id: "inv-1", status: "paid" },
+    cloudUuid: "uuid-1",
+    attemptId: "attempt_a",
+    detectedAt: "2026-08-17T02:00:00.000Z",
+  };
+
+  test("returns an empty read result when nothing is persisted", () => {
+    const result = readCloudSyncConflictVault(localStorage);
+    expect(result).toEqual(expect.objectContaining({ ok: true, present: false, entries: [], error: "" }));
+  });
+
+  test("returns the persisted evidence unchanged", () => {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, JSON.stringify({ version: 1, companyId: "company-1", entries: [entry] }));
+    const before = localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT);
+
+    const result = readCloudSyncConflictVault(localStorage);
+
+    expect(result.ok).toBe(true);
+    expect(result.companyId).toBe("company-1");
+    expect(result.entries).toEqual([entry]);
+    expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).toBe(before);
+  });
+
+  test("hands back a defensive clone, so a viewer cannot mutate stored evidence", () => {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, JSON.stringify({ version: 1, companyId: "company-1", entries: [entry] }));
+
+    const result = readCloudSyncConflictVault(localStorage);
+    result.entries[0].classificationCode = "tampered";
+
+    expect(readCloudSyncConflictVault(localStorage).entries[0].classificationCode).toBe("both_changed_conflict");
+  });
+
+  test("malformed JSON reads as an error and repairs nothing", () => {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, "{not json");
+
+    const result = readCloudSyncConflictVault(localStorage);
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, present: true, error: "conflict_vault_unreadable", entries: [] }));
+    expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).toBe("{not json");
+  });
+
+  test("performs no writes of any kind", () => {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, JSON.stringify({ version: 1, companyId: "company-1", entries: [entry] }));
+    const setItem = jest.fn();
+    const removeItem = jest.fn();
+    const probe = {
+      getItem: (key) => localStorage.getItem(key),
+      setItem,
+      removeItem,
+    };
+
+    expect(readCloudSyncConflictVault(probe).entries).toHaveLength(1);
+    expect(setItem).not.toHaveBeenCalled();
+    expect(removeItem).not.toHaveBeenCalled();
+  });
+});
+
+// INVOICE COMPARISON CONTRACT.
+//
+// normalizeInvoiceContract used to compare `document: { ...clone(invoice) }` --
+// the whole local runtime object. A cloud-restored invoice is rebuilt from
+// persisted columns only, so it can never carry the local computed/display
+// containers, and two invoices with identical business state diverged on every
+// field the writer is not even allowed to store.
+//
+// The fixtures below mirror the REAL shapes: a local invoice carries its
+// materials/labor containers and display metadata, while a restored cloud
+// invoice carries a flat lineItems array. Both map to the same canonical rows.
+describe("invoice convergence comparison contract", () => {
+  const { cloudSyncEqual } = require("./cloudSyncBaseline");
+
+  const HEAD = {
+    id: "inv_1", customerId: "cust_1", projectId: "proj_1", sourceEstimateId: "est_1",
+    invoiceNumber: "INV-3001", status: "paid", paymentStatus: "paid",
+    invoiceTotal: 1200, amountPaid: 1200, balanceRemaining: 0,
+    date: "2026-08-12", dueDate: "2026-08-20", notes: "",
+    payments: [{ id: "pay_1", amount: 1200, method: "cash", status: "paid", paidAt: "2026-08-12" }],
+  };
+
+  const CLOUD_LINE_ITEMS = [
+    { id: "invoice:inv_1:line:0", kind: "labor", description: "Painter", quantity: 1, unit: null, price: 65, total: null, hours: 8, sort_order: 0 },
+    { id: "invoice:inv_1:line:1", kind: "material", description: "Drop cloths", quantity: 4, unit: null, price: 10, total: null, sort_order: 1 },
+  ];
+
+  // Everything the local runtime carries that the cloud writer discards.
+  function richLocal(overrides = {}) {
+    return {
+      ...HEAD,
+      customerName: "Marisol Vega", projectName: "Bathroom Remodel", projectNumber: "VEGA-2402", workTitle: "Remodel",
+      createdAt: 1786831580069, savedAt: 1786831580069, updatedAt: 1786831580069, ts: 1786831580069,
+      docType: "invoice", invoiceType: "custom", ui: { docType: "invoice", materialsMode: "itemized" },
+      totalRevenue: 1200, grandTotal: 1200, grossProfit: 1200, grossMargin: 1, marginPct: 100,
+      financials: { totalRevenue: 1200, grandTotal: 1200, grossProfit: 1200 },
+      totals: { totalRevenue: 1200, grandTotal: 1200, grossProfit: 1200 },
+      customer: { id: "cust_1", fullName: "Marisol Vega", resPhone: "(602) 555-2284" },
+      job: { date: "2026-08-12", docNumber: "INV-3001", location: "4139 W Julie Dr" },
+      materials: { items: [{ kind: "material", desc: "Drop cloths", qty: 4, priceEach: 10, id: "invoice:inv_1:line:1", sort_order: 1 }], blanketCost: "" },
+      labor: { multiplier: 1, lines: [{ kind: "labor", role: "Painter", qty: 1, hours: 8, rate: 65, id: "invoice:inv_1:line:0", sort_order: 0 }] },
+      sourceEstimateSnapshot: { estimateId: "", approvedTotal: 0, summary: { total: 0 } },
+      additionalCharges: { items: [] },
+      ...overrides,
+    };
+  }
+
+  // What the restore path reconstructs from persisted columns.
+  function thinCloud(overrides = {}) {
+    return { ...HEAD, estimateNumber: "", terms: "", lineItems: CLOUD_LINE_ITEMS, ...overrides };
+  }
+
+  // The same equality the planner uses.
+  const sameContract = (left, right) => cloudSyncEqual(normalizeInvoiceContract(left), normalizeInvoiceContract(right));
+
+  test("TEST 1 -- rich local and thin cloud with the same business state compare equal", () => {
+    expect(sameContract(richLocal(), thinCloud())).toBe(true);
+    // And the contract no longer carries the raw runtime document at all.
+    expect(normalizeInvoiceContract(richLocal()).document).toBeUndefined();
+  });
+
+  test("TEST 2 -- a local payment with no individual status uses the existing mapper rule", () => {
+    // The backend mapper already maps a completed payment (positive amount +
+    // valid paidAt) with no legacy status to "paid". No new rule is introduced.
+    const localNoStatus = richLocal({ payments: [{ id: "pay_1", amount: 1200, method: "cash", paidAt: "2026-08-12" }] });
+    expect(normalizeInvoiceContract(localNoStatus).payments[0].status).toBe("paid");
+    expect(sameContract(localNoStatus, thinCloud())).toBe(true);
+  });
+
+  test("TEST 3 -- equivalent paidAt formatting of the same instant compares equal", () => {
+    const local = richLocal({ payments: [{ id: "pay_1", amount: 1200, method: "cash", paidAt: "2026-08-12" }] });
+    const cloud = thinCloud({ payments: [{ id: "pay_1", amount: 1200, method: "cash", status: "paid", paidAt: "2026-08-12T00:00:00+00:00" }] });
+    expect(normalizeInvoiceContract(local).payments[0].paid_at).toBe(normalizeInvoiceContract(cloud).payments[0].paid_at);
+    expect(sameContract(local, cloud)).toBe(true);
+  });
+
+  test("TEST 4 -- a different paidAt DAY is still a real conflict", () => {
+    const baseline = thinCloud({ payments: [{ id: "pay_1", amount: 1200, method: "cash", status: "paid", paidAt: "2026-08-05T00:00:00+00:00" }] });
+    const local = richLocal({ payments: [{ id: "pay_1", amount: 1200, method: "cash", paidAt: "2026-08-12" }] });
+    const cloud = thinCloud({ payments: [{ id: "pay_1", amount: 1200, method: "cash", status: "paid", paidAt: "2026-08-01T00:00:00+00:00" }] });
+
+    expect(sameContract(local, cloud)).toBe(false);
+    expect(classifyCloudConvergenceEntity({
+      local: normalizeInvoiceContract(local),
+      cloud: normalizeInvoiceContract(cloud),
+      baseline: normalizeInvoiceContract(baseline),
+    })).toBe("both_changed_conflict");
+  });
+
+  test("TEST 5 -- a payment amount difference is still a conflict", () => {
+    expect(sameContract(richLocal(), thinCloud({
+      payments: [{ id: "pay_1", amount: 900, method: "cash", status: "paid", paidAt: "2026-08-12" }],
+    }))).toBe(false);
+  });
+
+  test("TEST 6 -- payment method and canonical status differences are still conflicts", () => {
+    expect(sameContract(richLocal(), thinCloud({
+      payments: [{ id: "pay_1", amount: 1200, method: "card", status: "paid", paidAt: "2026-08-12" }],
+    }))).toBe(false);
+    expect(sameContract(richLocal(), thinCloud({
+      payments: [{ id: "pay_1", amount: 1200, method: "cash", status: "void", paidAt: "2026-08-12" }],
+    }))).toBe(false);
+    // A different persisted payment identity is a conflict, not a silent merge.
+    expect(sameContract(richLocal(), thinCloud({
+      payments: [{ id: "pay_2", amount: 1200, method: "cash", status: "paid", paidAt: "2026-08-12" }],
+    }))).toBe(false);
+  });
+
+  test("TEST 7 -- line-item economics differences are still conflicts", () => {
+    const changed = (patch) => thinCloud({ lineItems: [{ ...CLOUD_LINE_ITEMS[0], ...patch }, CLOUD_LINE_ITEMS[1]] });
+    expect(sameContract(richLocal(), changed({ quantity: 2 }))).toBe(false);
+    expect(sameContract(richLocal(), changed({ price: 70 }))).toBe(false);
+    expect(sameContract(richLocal(), changed({ hours: 9 }))).toBe(false);
+    expect(sameContract(richLocal(), changed({ description: "Finish Carpenter" }))).toBe(false);
+    expect(sameContract(richLocal(), changed({ total: 999 }))).toBe(false);
+    // A dropped child row is a conflict too.
+    expect(sameContract(richLocal(), thinCloud({ lineItems: [CLOUD_LINE_ITEMS[0]] }))).toBe(false);
+  });
+
+  test("invoice money, status and relationship differences are still conflicts", () => {
+    expect(sameContract(richLocal(), thinCloud({ invoiceTotal: 1300 }))).toBe(false);
+    expect(sameContract(richLocal(), thinCloud({ amountPaid: 600, balanceRemaining: 600, paymentStatus: "partial" }))).toBe(false);
+    expect(sameContract(richLocal(), thinCloud({ status: "sent" }))).toBe(false);
+    expect(sameContract(richLocal(), thinCloud({ invoiceNumber: "INV-3002" }))).toBe(false);
+    expect(sameContract(richLocal(), thinCloud({ projectId: "proj_2" }))).toBe(false);
+    expect(sameContract(richLocal(), thinCloud({ dueDate: "2026-09-01" }))).toBe(false);
+    expect(sameContract(richLocal(), thinCloud({ notes: "cloud note" }))).toBe(false);
+  });
+
+  test("runtime payment array order is not business state, but duplicates still surface", () => {
+    const two = [
+      { id: "pay_1", amount: 600, method: "cash", status: "paid", paidAt: "2026-08-12" },
+      { id: "pay_2", amount: 600, method: "cash", status: "paid", paidAt: "2026-08-13" },
+    ];
+    expect(sameContract(richLocal({ payments: two }), thinCloud({ payments: [...two].reverse() }))).toBe(true);
+    // A repeated persisted identity is not collapsed by the ordering.
+    const duplicated = normalizeInvoiceContract(richLocal({ payments: [two[0], two[0]] })).payments;
+    expect(duplicated).toHaveLength(2);
+    expect(duplicated[0].legacy_local_id).toBe(duplicated[1].legacy_local_id);
+  });
 });

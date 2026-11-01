@@ -1,6 +1,6 @@
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { getSupabaseClient } from "./supabaseClient";
-import { mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
+import { mapLocalSnapshotToBackendDraft, mapLocalEstimateToBackendEstimate } from "../utils/backendDataMapper";
 import { buildPersistedEstimateContract } from "./supabaseEstimatePersistenceContract";
 import { buildEstimateRestorePayload, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
 import { readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
@@ -184,14 +184,26 @@ function buildEstimateContract(estimate, customerIds, projectIds, localEstimates
   };
 }
 
-function buildInvoiceContract(invoice, customerIds, projectIds, estimateIds) {
+function buildInvoiceContract(invoice, customerIds, projectIds, estimateIds, localEstimatesByLegacyId, cloudEstimateNumber = "") {
+  const sourceEstimateLegacyId = asText(invoice?.source_estimate_legacy_id || invoice?.source_estimate_legacy_local_id);
+  const linkedEstimate = localEstimatesByLegacyId.get(sourceEstimateLegacyId);
+  const linkedEstimateNumber = linkedEstimate
+    ? buildPersistedEstimateContract(mapLocalEstimateToBackendEstimate(linkedEstimate, {})).estimate_number
+    : null;
+  const derivedLegacyEstimateNumber = asText(cloudEstimateNumber) && linkedEstimateNumber === asText(cloudEstimateNumber)
+    ? linkedEstimateNumber
+    : null;
   return {
     customer_id: customerIds.get(asText(invoice?.customer_legacy_local_id)) || null,
     project_id: projectIds.get(asText(invoice?.project_legacy_local_id)) || null,
-    estimate_id: estimateIds.get(asText(invoice?.source_estimate_legacy_local_id)) || null,
-    source_estimate_legacy_id: invoice?.source_estimate_legacy_local_id || null,
+    estimate_id: estimateIds.get(sourceEstimateLegacyId) || null,
+    source_estimate_legacy_id: sourceEstimateLegacyId || null,
     invoice_number: invoice?.invoice_number || null,
-    estimate_number: invoice?.estimate_number || null,
+    // Older local invoices can legitimately predate the persisted
+    // estimateNumber field. Their linked local estimate is the canonical source
+    // for this denormalized cloud column, so derive it before declaring a
+    // business-state mismatch.
+    estimate_number: invoice?.estimate_number || derivedLegacyEstimateNumber || null,
     status: invoice?.status || "draft",
     payment_status: invoice?.payment_status || "unpaid",
     invoice_date: invoice?.invoice_date || null,
@@ -227,6 +239,20 @@ function sameChildContract(expected, cloud, { parentColumn, includeLineRole }) {
   if (includeLineRole) fields.push("line_role");
   return JSON.stringify(fields.map((field) => normalizedChildValue(expected?.[field])))
     === JSON.stringify(fields.map((field) => normalizedChildValue(cloud?.[field])));
+}
+
+// Narrow exports for targeted mutation verification. Keeping normalization and
+// field vocabularies here preserves one semantic comparison owner.
+export function comparePersistedCloudSemanticContract(table, expected, cloud) {
+  return compareSemanticContract(expected, cloud, SEMANTIC_FIELDS[table] || []);
+}
+
+export function samePersistedInvoiceLineItemContract(expected, cloud) {
+  return sameChildContract(expected, cloud, { parentColumn: "invoice_id", includeLineRole: false });
+}
+
+export function samePersistedEstimateLineItemContract(expected, cloud) {
+  return sameChildContract(expected, cloud, { parentColumn: "estimate_id", includeLineRole: true });
 }
 
 // Expected cloud child rows are built from the SHARED line-item contract, so the
@@ -265,7 +291,7 @@ function hasValidEstimateRestorePayload(row) {
   );
 }
 
-function buildExpectedSemanticContract(table, localRow, draft, cloudRowsByTable, localSnapshot) {
+function buildExpectedSemanticContract(table, localRow, draft, cloudRowsByTable, localSnapshot, cloudRow = null) {
   const customerIds = cloudIdByLegacyId(cloudRowsByTable.customers);
   const projectIds = cloudIdByLegacyId(cloudRowsByTable.projects);
   const estimateIds = cloudIdByLegacyId(cloudRowsByTable.estimates);
@@ -279,7 +305,7 @@ function buildExpectedSemanticContract(table, localRow, draft, cloudRowsByTable,
   if (table === "customers") return buildCustomerContract(localRow);
   if (table === "projects") return buildProjectContract(localRow, customerIds);
   if (table === "estimates") return buildEstimateContract(localRow, customerIds, projectIds, localEstimatesByLegacyId);
-  if (table === "invoices") return buildInvoiceContract(localRow, customerIds, projectIds, estimateIds);
+  if (table === "invoices") return buildInvoiceContract(localRow, customerIds, projectIds, estimateIds, localEstimatesByLegacyId, cloudRow?.estimate_number);
   if (table === "invoice_payments") return buildInvoicePaymentContract(localRow, invoiceIds);
   return {};
 }
@@ -353,7 +379,7 @@ function classifyExtraInvoiceLineItems(extraRows, parentCloudRows, localParentLe
       && parsed.parentSegment === sanitizeLineItemParentSegment(parentLegacyId)
       && isProvenEmptyInvoiceLineItemPlaceholder(row)
     ) {
-      repairable.push({ rowId, legacyId });
+      repairable.push({ rowId, legacyId, parentLegacyId });
       return;
     }
     unresolved.push(legacyId || "missing");
@@ -553,7 +579,7 @@ export async function runSupabaseCloudVerification({
       const legacyLocalId = asText(localRow?.legacy_local_id);
       const cloudRow = cloudByLegacyId.get(legacyLocalId);
       if (!legacyLocalId || !cloudRow) return;
-      const expected = buildExpectedSemanticContract(table, localRow, draft, cloudRowsByTable, localSnapshot);
+      const expected = buildExpectedSemanticContract(table, localRow, draft, cloudRowsByTable, localSnapshot, cloudRow);
       const mismatchedFields = compareSemanticContract(expected, cloudRow, SEMANTIC_FIELDS[table] || []);
       if (mismatchedFields.length === 0) return;
       semanticMismatchLegacyIds.push(legacyLocalId);
@@ -671,6 +697,7 @@ export async function runSupabaseCloudVerification({
         count: extraClassification.repairable.length,
         rowIds: extraClassification.repairable.map((entry) => entry.rowId).sort(),
         legacyIds: extraClassification.repairable.map((entry) => entry.legacyId).sort(),
+        parentLegacyIds: [...new Set(extraClassification.repairable.map((entry) => entry.parentLegacyId).filter(Boolean))].sort(),
       });
     }
     // A table is repairable-only when its ENTIRE mismatch is the proven blank

@@ -15,13 +15,116 @@ import useSupabaseAuth from "./useSupabaseAuth";
 import useSupabaseAccount from "./useSupabaseAccount";
 import useDeviceLockStatus from "./useDeviceLockStatus";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { getCloudMutationLedgerSummary, readCloudMutationLedger } from "./cloudMutationLedger";
 import {
   buildLocalSnapshotFromStorage,
   getCloudDataDecision,
+  LOCAL_DATA_DECISION,
   scanLocalDataIntegrity,
 } from "./localDataIntegrity";
 
 export const CLOUD_BACKUP_RESTORE_BANNER_DURATION_MS = 6000;
+export const CLOUD_PRODUCT_STATE = Object.freeze({
+  CLOUD_OK: "cloud_ok",
+  CLOUD_CONNECTED: "cloud_connected",
+  SYNCING: "syncing",
+  PENDING: "pending",
+  SYNC_ISSUE: "sync_issue",
+  RESTORE_AVAILABLE: "restore_available",
+});
+
+// ONE product clock for "Last synced". Successful cloud proof is recorded in
+// three different places by three legitimate owners: the first whole-workspace
+// bootstrap backup (queue.lastSuccessfulBackupAt), a verified queue generation
+// (queue.lastVerifiedAt), and a verified/acknowledged targeted mutation
+// (ledger.lastVerifiedAt). After the mutation-ledger cutover routine sync stopped
+// writing the queue clock, so reading the queue alone reported a months-old
+// bootstrap date while targeted syncs were succeeding today. The newest VALID
+// proof wins; 0, NaN, and any non-positive value are not proof, and nothing here
+// invents or advances a timestamp -- a pending or failed mutation never writes
+// one, so it can never appear.
+function toValidSyncTimestamp(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  const numeric = typeof value === "number" ? value : Date.parse(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+}
+
+export function deriveLastSuccessfulSyncAt({ queueState = null, ledgerVerifiedAt = null } = {}) {
+  const newest = [
+    queueState?.lastSuccessfulBackupAt,
+    queueState?.lastVerifiedAt,
+    ledgerVerifiedAt,
+  ].reduce((best, candidate) => Math.max(best, toValidSyncTimestamp(candidate)), 0);
+  return newest > 0 ? newest : null;
+}
+
+export function deriveCloudProductStatus({
+  connected = false,
+  deviceLocked = false,
+  decision = null,
+  queueState = null,
+  mutationLedger = null,
+  workerRunning = false,
+} = {}) {
+  if (!connected) return Object.freeze({ state: null, retryAvailable: false, pendingReason: "", action: "none", lastSuccessfulSyncAt: null, lastSuccessfulBackupAt: null });
+
+  const ledgerSummary = getCloudMutationLedgerSummary(mutationLedger);
+  const screenState = decision?.screenState;
+  const integrityIssue = Boolean(
+    decision?.firstBlocker
+    || decision?.cloudUnrestorable
+    || screenState === LOCAL_DATA_DECISION.PARTIAL_LOCAL_DATA
+    || screenState === LOCAL_DATA_DECISION.NEEDS_REPAIR_BEFORE_BACKUP
+  );
+  const currentIssue = Boolean(
+    deviceLocked
+    || integrityIssue
+    || decision?.ledgerFailed
+    || decision?.queueUnresolved
+    || decision?.mismatch
+    || screenState === LOCAL_DATA_DECISION.BACKUP_FAILED
+  );
+
+  let state;
+  if (currentIssue) state = CLOUD_PRODUCT_STATE.SYNC_ISSUE;
+  else if (workerRunning || decision?.ledgerSyncing || decision?.queueSyncing) state = CLOUD_PRODUCT_STATE.SYNCING;
+  else if (decision?.ledgerPending || decision?.knownPendingLocalMutation) state = CLOUD_PRODUCT_STATE.PENDING;
+  else if (decision?.restoreAvailable) state = CLOUD_PRODUCT_STATE.RESTORE_AVAILABLE;
+  else if (decision?.verifiedCurrent) state = CLOUD_PRODUCT_STATE.CLOUD_OK;
+  else state = CLOUD_PRODUCT_STATE.CLOUD_CONNECTED;
+
+  const queueStatus = String(queueState?.status || "").trim();
+  const pendingReason = state === CLOUD_PRODUCT_STATE.PENDING
+    ? queueStatus === "offline_pending" ? "offline" : queueStatus === "retry_wait" ? "retry" : "pending"
+    : "";
+  const queueRetryable = Boolean(queueState?.pending && queueStatus === "needs_attention");
+  const retryAvailable = state === CLOUD_PRODUCT_STATE.SYNC_ISSUE
+    && !deviceLocked
+    && Boolean(ledgerSummary.failed || queueRetryable);
+  const action = deviceLocked
+    ? "device_locked"
+    : state === CLOUD_PRODUCT_STATE.SYNC_ISSUE
+      ? "open_settings"
+      : state === CLOUD_PRODUCT_STATE.RESTORE_AVAILABLE
+        ? "open_restore"
+        : "none";
+
+  const lastSuccessfulSyncAt = deriveLastSuccessfulSyncAt({
+    queueState,
+    ledgerVerifiedAt: ledgerSummary.lastVerifiedAt,
+  });
+
+  return Object.freeze({
+    state,
+    retryAvailable,
+    pendingReason,
+    action,
+    lastSuccessfulSyncAt,
+    // Same derived value under the older name, so no consumer can read a
+    // different clock than the one Settings shows.
+    lastSuccessfulBackupAt: lastSuccessfulSyncAt,
+  });
+}
 
 function isRestoreRecent() {
   const at = getLastCloudRestoreCompleteAt();
@@ -53,6 +156,7 @@ export default function useCloudBackupStatus() {
     enabled: Boolean(isSupabaseReady && user?.id && company?.id),
   });
   const [queueState, setQueueState] = useState(() => readCloudBackupQueueState());
+  const [mutationLedger, setMutationLedger] = useState(() => readCloudMutationLedger());
   const [workerRunning, setWorkerRunning] = useState(false);
   const [restoredRecently, setRestoredRecently] = useState(isRestoreRecent);
   const [localIntegrity, setLocalIntegrity] = useState(readLocalIntegrity);
@@ -65,6 +169,7 @@ export default function useCloudBackupStatus() {
   useEffect(() => {
     const refresh = () => {
       setQueueState(readCloudBackupQueueState());
+      setMutationLedger(readCloudMutationLedger());
       setLocalIntegrity(readLocalIntegrity());
     };
 
@@ -73,6 +178,7 @@ export default function useCloudBackupStatus() {
       if (
         key
         && key !== STORAGE_KEYS.CLOUD_BACKUP_QUEUE
+        && key !== STORAGE_KEYS.CLOUD_MUTATION_LEDGER
         && key !== STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS
         && key !== STORAGE_KEYS.CUSTOMERS
         && key !== STORAGE_KEYS.PROJECTS
@@ -165,6 +271,8 @@ export default function useCloudBackupStatus() {
       user,
       company,
       role,
+      allowAutomaticSafeRepair: false,
+      verifyEstablishedWorkspace: false,
     })
       .then(async (result) => {
         if (!active) return;
@@ -207,6 +315,7 @@ export default function useCloudBackupStatus() {
 
   const refreshCloudStatus = () => {
     setQueueState(readCloudBackupQueueState());
+    setMutationLedger(readCloudMutationLedger());
     setLocalIntegrity(readLocalIntegrity());
     setRefreshToken((value) => value + 1);
   };
@@ -215,11 +324,23 @@ export default function useCloudBackupStatus() {
     localIntegrity,
     cloudVerification: onboardingStatus?.verification || null,
     queueState,
+    mutationLedger,
     onboardingStatus,
     restorePreview,
     workerRunning,
     restoredRecently,
   });
+
+  const connected = Boolean(isSupabaseReady && user?.id && userEmail && hasCompany && company?.id);
+  const productStatus = deriveCloudProductStatus({
+    connected,
+    deviceLocked: deviceLock.isLocked,
+    decision,
+    queueState,
+    mutationLedger,
+    workerRunning,
+  });
+  const productState = productStatus.state;
 
   if (deviceLock.isLocked) {
     return {
@@ -227,6 +348,9 @@ export default function useCloudBackupStatus() {
       hasCompany,
       userEmail,
       queueState,
+      mutationLedger,
+      productState,
+      productStatus,
       displayState: "failed",
       chipState: "device_locked",
       chipAction: "device_locked",
@@ -242,15 +366,13 @@ export default function useCloudBackupStatus() {
     };
   }
 
-  const displayState = decision.chipState === "restored"
-    ? "current"
-    : decision.chipState === "backup_running"
+  const displayState = productState === CLOUD_PRODUCT_STATE.SYNCING
       ? "running"
-      : decision.chipState === "backup_pending"
+      : productState === CLOUD_PRODUCT_STATE.PENDING
         ? "pending"
-        : decision.chipState === "cloud_verified_current"
+        : productState === CLOUD_PRODUCT_STATE.CLOUD_OK || productState === CLOUD_PRODUCT_STATE.CLOUD_CONNECTED
           ? "current"
-          : decision.chipState === "backup_failed" || decision.chipState === "local_cloud_mismatch"
+          : productState === CLOUD_PRODUCT_STATE.SYNC_ISSUE
             ? "failed"
             : "none";
 
@@ -259,9 +381,12 @@ export default function useCloudBackupStatus() {
     hasCompany,
     userEmail,
     queueState,
+    mutationLedger,
+    productState,
+    productStatus,
     displayState,
     chipState: decision.chipState,
-    chipAction: decision.chipAction,
+    chipAction: productStatus.action,
     restoredRecently,
     onboardingStatus,
     restorePreview,

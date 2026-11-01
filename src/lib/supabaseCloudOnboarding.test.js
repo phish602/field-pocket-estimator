@@ -30,8 +30,12 @@ jest.mock("./supabaseClient", () => ({
   getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
 }));
 
+// Only the ownership READ is stubbed. operationFenceStillCurrent and
+// buildStaleOperationResult stay real, so the generation check these tests
+// exercise is the production one.
 jest.mock("./supabaseDeviceLock", () => ({
   __esModule: true,
+  ...jest.requireActual("./supabaseDeviceLock"),
   ensureCurrentDeviceCanWriteCloud: (...args) => mockEnsureCurrentDeviceCanWriteCloud(...args),
 }));
 
@@ -73,6 +77,12 @@ const {
 } = require("./supabaseCloudOnboarding");
 const { markCloudBackupDirty, readCloudBackupQueueState } = require("./cloudBackupQueue");
 const { STORAGE_KEYS } = require("../constants/storageKeys");
+
+// The lease generation every default fixture operates under.
+const ONBOARDING_FENCE = { companyId: "company_1", deviceId: "device-a", lockVersion: 5 };
+function onboardingAccessOk(fence = ONBOARDING_FENCE) {
+  return { ok: true, access: { isActive: true, isLocked: false, fence }, error: "" };
+}
 
 function buildPreview(overrides = {}) {
   return {
@@ -298,7 +308,7 @@ describe("supabaseCloudOnboarding", () => {
       },
     });
     mockGetSupabaseClient.mockReturnValue(null);
-    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue(onboardingAccessOk());
   });
 
   describe("checkSupabaseCloudOnboardingStatus", () => {
@@ -365,6 +375,20 @@ describe("supabaseCloudOnboarding", () => {
       expect(result.noWritesPerformed).toBe(true);
     });
 
+    test("returns neutral established_workspace without row verification for observational polling", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+
+      const result = await checkSupabaseCloudOnboardingStatus({
+        ...baseContext,
+        verifyEstablishedWorkspace: false,
+      });
+
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.ESTABLISHED_WORKSPACE);
+      expect(result.verification).toBeNull();
+      expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
+      expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
+    });
+
     test("returns ready_to_backup when local data exists and the cloud workspace is empty", async () => {
       mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
         cloudCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },
@@ -388,9 +412,8 @@ describe("supabaseCloudOnboarding", () => {
       expect(result.noWritesPerformed).toBe(true);
     });
 
-    test("auto-runs one safe metadata repair and then backs up before reporting status", async () => {
-      mockCreateSupabaseMigrationPreview
-        .mockResolvedValueOnce(buildPreview({
+    test("safe metadata candidates never turn an onboarding status read into a whole-workspace write", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
           integrity: buildIntegrity({
             safeRepairs: [{ code: "estimate_project_stale", details: { count: 2, entityIds: ["est_1", "est_2"] } }],
             backupReadiness: {
@@ -400,31 +423,75 @@ describe("supabaseCloudOnboarding", () => {
               firstBlocker: null,
             },
           }),
-        }))
-        .mockResolvedValueOnce(buildPreview({
-          integrity: buildIntegrity(),
         }));
-      mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
-      mockRepairStoredLocalDataIntegrity.mockReturnValue({
-        changed: true,
-        repairs: { staleEstimateProjectIds: [{ estimateId: "est_1", staleProjectId: "proj_missing" }] },
-        integrity: buildIntegrity(),
-      });
-      mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
-      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: true }));
 
       const result = await checkSupabaseCloudOnboardingStatus(baseContext);
 
-      expect(mockRepairStoredLocalDataIntegrity).toHaveBeenCalledWith(baseContext.storageSnapshot);
-      expect(mockRunSupabaseMigrationWrite).toHaveBeenCalledTimes(1);
-      expect(mockRunSupabaseCloudVerification).toHaveBeenCalledTimes(1);
-      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED);
+      expect(mockRepairStoredLocalDataIntegrity).not.toHaveBeenCalled();
+      expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
+      expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
+      expect(result.noWritesPerformed).toBe(true);
       expect(result.automaticSafeRepair).toEqual(expect.objectContaining({
-        attempted: true,
-        succeeded: true,
-        failed: false,
-        repairChanged: true,
+        attempted: false,
+        skipped: true,
       }));
+    });
+
+    test("observational status checks never repair or back up a safe-repair candidate", async () => {
+      const setItemSpy = jest.fn();
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
+        integrity: buildIntegrity({
+          safeRepairs: [{ code: "estimate_project_stale", details: { count: 2, entityIds: ["est_1", "est_2"] } }],
+          backupReadiness: {
+            blocked: false,
+            safe: false,
+            canProceedAfterSafeRepair: true,
+            firstBlocker: null,
+          },
+        }),
+      }));
+
+      const result = await checkSupabaseCloudOnboardingStatus({
+        ...baseContext,
+        storageSnapshot: { getItem: () => null, setItem: setItemSpy, removeItem: jest.fn() },
+        allowAutomaticSafeRepair: false,
+        verifyEstablishedWorkspace: false,
+      });
+
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.ESTABLISHED_WORKSPACE);
+      expect(result.noWritesPerformed).toBe(true);
+      expect(result.automaticSafeRepair).toBeNull();
+      expect(mockRepairStoredLocalDataIntegrity).not.toHaveBeenCalled();
+      expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
+      expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
+      expect(mockEnsureCurrentDeviceCanWriteCloud).not.toHaveBeenCalled();
+      expect(setItemSpy).not.toHaveBeenCalled();
+    });
+
+    test("observational established classification never weakens a real integrity blocker", async () => {
+      const blocker = { code: "duplicate_invoice_id:INV-1", message: "Duplicate invoice id." };
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
+        integrity: buildIntegrity({
+          blockers: [blocker],
+          backupReadiness: {
+            blocked: true,
+            safe: false,
+            canProceedAfterSafeRepair: false,
+            firstBlocker: blocker,
+          },
+        }),
+      }));
+
+      const result = await checkSupabaseCloudOnboardingStatus({
+        ...baseContext,
+        allowAutomaticSafeRepair: false,
+        verifyEstablishedWorkspace: false,
+      });
+
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
+      expect(mockRepairStoredLocalDataIntegrity).not.toHaveBeenCalled();
+      expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
     });
 
     test("safe metadata repair failure reports contractor-safe needs_attention without writing cloud data", async () => {
@@ -456,26 +523,50 @@ describe("supabaseCloudOnboarding", () => {
       const result = await checkSupabaseCloudOnboardingStatus(baseContext);
 
       expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
-      expect(result.error).toBe("We could not finish protecting this device automatically.");
+      expect(result.error).toBe("Local metadata needs repair before cloud backup can continue.");
       expect(result.automaticSafeRepair).toEqual(expect.objectContaining({
-        attempted: true,
-        failed: true,
+        attempted: false,
+        failed: false,
+        skipped: true,
       }));
+      expect(mockRepairStoredLocalDataIntegrity).not.toHaveBeenCalled();
       expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
       expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
     });
 
-    test("falls back to verification when the cloud count check itself is unavailable", async () => {
+    test("observational polling does not call an unknown cloud state established", async () => {
       mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
         cloudCountCheckAvailable: false,
         cloudCounts: null,
       }));
       mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: true }));
 
-      const result = await checkSupabaseCloudOnboardingStatus(baseContext);
+      const result = await checkSupabaseCloudOnboardingStatus({
+        ...baseContext,
+        verifyEstablishedWorkspace: false,
+      });
 
       expect(mockRunSupabaseCloudVerification).toHaveBeenCalled();
       expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP);
+      expect(result.status).not.toBe(CLOUD_ONBOARDING_STATUS.ESTABLISHED_WORKSPACE);
+    });
+
+    test("missing core count values remain unknown even when the count check flag is set", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
+        cloudCountCheckAvailable: true,
+        cloudCounts: { customers: 1, projects: 1, estimates: 1 },
+      }));
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: false }));
+
+      const result = await checkSupabaseCloudOnboardingStatus({
+        ...baseContext,
+        verifyEstablishedWorkspace: false,
+      });
+
+      expect(mockRunSupabaseCloudVerification).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH);
+      expect(result.status).not.toBe(CLOUD_ONBOARDING_STATUS.ESTABLISHED_WORKSPACE);
+      expect(result.status).not.toBe(CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP);
     });
 
     test("never writes to localStorage while checking status", async () => {
@@ -707,7 +798,7 @@ describe("supabaseCloudOnboarding", () => {
       mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
       mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: true }));
       mockEnsureCurrentDeviceCanWriteCloud
-        .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+        .mockResolvedValueOnce(onboardingAccessOk())
         .mockResolvedValueOnce({
           ok: false,
           code: "device_lock_lost",
@@ -926,5 +1017,95 @@ describe("supabaseCloudOnboarding", () => {
         skippedEstimateIds: ["est_2", "est_3", "est_4"],
       }));
     });
+  });
+});
+
+// START-FENCE: the completion check before clearing the backup queue asked only
+// "is this device active NOW?". A(v5) -> B(v6) -> A(v7) answers yes, which would
+// let a backup verified under the OLD generation mark the workspace clean and
+// discard the pending work of the generation that replaced it.
+describe("runSupabaseCloudOnboardingBackup START fence", () => {
+  const fenceA5 = { companyId: "company_1", deviceId: "device-a", lockVersion: 5 };
+  const fenceA7 = { companyId: "company_1", deviceId: "device-a", lockVersion: 7 };
+  const fenceB6 = { companyId: "company_1", deviceId: "device-b", lockVersion: 6 };
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockCreateSupabaseMigrationPreview.mockReset();
+    mockIsSupabaseMigrationPreviewReady.mockReset();
+    mockRunSupabaseMigrationWrite.mockReset();
+    mockRunSupabaseCloudVerification.mockReset();
+    mockCheckEstimateRestorePayloadProtection.mockReset();
+    mockUpdateEstimateRestorePayloads.mockReset();
+    mockRepairStoredLocalDataIntegrity.mockReset();
+    mockBuildLocalSnapshotFromStorage.mockReset();
+    mockGetSupabaseClient.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
+
+    mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+    mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
+    mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
+    mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: true }));
+    mockCheckEstimateRestorePayloadProtection.mockResolvedValue(buildPayloadProtection());
+    mockUpdateEstimateRestorePayloads.mockResolvedValue(buildPayloadRepairResult());
+    mockRepairStoredLocalDataIntegrity.mockReturnValue({ changed: false, repairs: {}, integrity: buildIntegrity() });
+    mockBuildLocalSnapshotFromStorage.mockReturnValue({
+      artifact: null,
+      snapshot: { customers: [], projects: [], estimates: [], invoices: [] },
+    });
+    mockGetSupabaseClient.mockReturnValue(null);
+    markCloudBackupDirty({ reason: "backup_fence_probe", domains: ["invoices"], severity: "money_critical" });
+  });
+
+  test("a same-owner heartbeat keeps the same generation and still completes the backup", async () => {
+    mockEnsureCurrentDeviceCanWriteCloud
+      .mockResolvedValueOnce(onboardingAccessOk(fenceA5))
+      .mockResolvedValueOnce(onboardingAccessOk(fenceA5));
+
+    const result = await runSupabaseCloudOnboardingBackup(baseContext);
+
+    expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED);
+    expect(readCloudBackupQueueState().pending).toBe(false);
+  });
+
+  test("A(v5) -> B(v6) -> A(v7) cannot clear the queue or report BACKUP_COMPLETED", async () => {
+    // The completion read says ok -- this device IS active again -- but under a
+    // generation that is not the one this backup was verified against.
+    mockEnsureCurrentDeviceCanWriteCloud
+      .mockResolvedValueOnce(onboardingAccessOk(fenceA5))
+      .mockResolvedValueOnce(onboardingAccessOk(fenceA7));
+
+    const result = await runSupabaseCloudOnboardingBackup(baseContext);
+
+    // It reached the fenced boundary: verification actually ran.
+    expect(mockRunSupabaseCloudVerification).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
+    expect(result.deviceLockLost).toBe(true);
+    // FORBIDDEN: the pending backup must survive for the current owner.
+    expect(readCloudBackupQueueState().pending).toBe(true);
+  });
+
+  test("a takeover reported as still-active cannot clear the queue", async () => {
+    mockEnsureCurrentDeviceCanWriteCloud
+      .mockResolvedValueOnce(onboardingAccessOk(fenceA5))
+      .mockResolvedValueOnce(onboardingAccessOk(fenceB6));
+
+    const result = await runSupabaseCloudOnboardingBackup(baseContext);
+
+    expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
+    expect(readCloudBackupQueueState().pending).toBe(true);
+  });
+
+  test("an unprovable generation fails closed rather than clearing the queue", async () => {
+    // No fence at all means the generation cannot be proved. That is a block,
+    // never an implicit pass.
+    mockEnsureCurrentDeviceCanWriteCloud
+      .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+      .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+
+    const result = await runSupabaseCloudOnboardingBackup(baseContext);
+
+    expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
+    expect(readCloudBackupQueueState().pending).toBe(true);
   });
 });

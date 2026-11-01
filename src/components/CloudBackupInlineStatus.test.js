@@ -9,6 +9,7 @@ import {
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 import { CLOUD_RESTORE_COMPLETE_EVENT } from "../lib/supabaseCloudRestore";
+import { STORAGE_KEYS } from "../constants/storageKeys";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -82,12 +83,11 @@ test("renders nothing when not signed in or no cloud workspace", async () => {
   expect(screen.queryByTestId("cloud-backup-inline-status")).not.toBeInTheDocument();
 });
 
-test("renders current copy when cloud verification confirms this device is current", async () => {
+test("renders connected copy from observational status without queue proof", async () => {
+  checkSupabaseCloudOnboardingStatus.mockImplementation(() => resolvedEffectThenable({ status: "established_workspace" }));
   await renderAndSettle();
 
-  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
-    "Saved on this device · Cloud up to date"
-  );
+  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent("Cloud connected");
 });
 
 test("renders pending copy", async () => {
@@ -177,22 +177,35 @@ test("renders a calm failed/retry copy", async () => {
   );
 });
 
-test("renders permanent conflict copy without retry wording", async () => {
+test("renders permanent conflict as generic sync attention", async () => {
   markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
   markCloudBackupReviewRequired("Cloud payment history requires review.", { status: "conflict" });
 
   await renderAndSettle();
 
   expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
-    "Saved on this device · Cloud sync conflict"
+    "Saved on this device · Sync needs attention"
   );
 });
 
-test("renders restored copy after a cloud-restore-complete event", async () => {
+test("renders verified canonical health over quarantined historical conflict", async () => {
+  localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+    schemaVersion: "2.0.0", pending: true, status: "conflict", reasons: [], domains: [],
+    companyId: "company_1", localMutationRevision: 4, syncingRevision: null,
+    lastVerifiedAt: 123, lastError: "Preserved historical evidence",
+  }));
+
+  await renderAndSettle();
+
+  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent("Cloud up to date");
+  expect(screen.queryByText(/Sync needs attention/)).not.toBeInTheDocument();
+});
+
+test("keeps connected copy after a restore event without verified proof", async () => {
   await renderAndSettle();
   act(() => {
     window.dispatchEvent(new CustomEvent(CLOUD_RESTORE_COMPLETE_EVENT, { detail: { restored: true } }));
   });
 
-  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent("Cloud backup restored");
+  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent("Cloud connected");
 });

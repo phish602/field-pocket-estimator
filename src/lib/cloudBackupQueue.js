@@ -1,16 +1,30 @@
 // @ts-nocheck
 /* eslint-disable */
 
-// Centralized "cloud backup dirty" marker. This is the trigger/queue
-// foundation for automatic cloud backup: every conscious durable user edit
-// calls markCloudBackupDirty() so a future background worker knows local
-// data has changed and needs to be protected in the cloud. This module does
-// not perform any network activity itself and must never block or throw
-// into a caller's local save flow.
+// Compatibility/bootstrap queue retained beside the targeted mutation ledger.
+// Routine business saves no longer enter this queue; only explicit first
+// bootstrap and persisted pre-cutover generations use it.
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { runtimeCommitAtomicRecords } from "./vaultRuntimeStore";
+import { appendCloudMutationRecords, readCloudMutationLedger } from "./cloudMutationLedger";
+import { browserSurfaceInactiveError, isBrowserSurfaceActive } from "./browserSurfaceAuthority";
 
-export const CLOUD_BACKUP_QUEUE_SCHEMA_VERSION = "2.0.0";
+export const CLOUD_BACKUP_QUEUE_SCHEMA_VERSION = "4.0.0";
+export const PREVIOUS_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION = "3.0.0";
+export const OLDER_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION = "2.0.0";
+
+export const CLOUD_BACKUP_QUEUE_PURPOSE = Object.freeze({
+  NONE: "none",
+  BOOTSTRAP: "bootstrap",
+  LEGACY_COMPATIBILITY: "legacy_compatibility",
+});
+
+export const CLOUD_BACKUP_REVIEW_ORIGIN = Object.freeze({
+  NONE: "",
+  LEGACY_HISTORICAL_REVIEW: "legacy_historical_review",
+  CURRENT_SYNC_FAILURE: "current_sync_failure",
+});
 
 export const CLOUD_BACKUP_SEVERITY = {
   LOW: "low",
@@ -111,6 +125,10 @@ function defaultPriorityForSeverity(severity) {
     : CLOUD_BACKUP_PRIORITY.NORMAL;
 }
 
+export function createEmptyCloudBackupQueueState() {
+  return defaultQueueState();
+}
+
 function defaultQueueState() {
   return {
     schemaVersion: CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
@@ -137,6 +155,12 @@ function defaultQueueState() {
     lastErrorCode: "",
     source: "",
     documentId: "",
+    reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.NONE,
+    purpose: CLOUD_BACKUP_QUEUE_PURPOSE.NONE,
+    compatibilityMaterializedRevision: null,
+    compatibilityMaterializedAt: null,
+    legacyCompatibilityEvidence: null,
+    supersededCompatibilityFailure: null,
     // Reserved for a future local-fingerprint/hash engine that can prove
     // local data actually differs from the last known cloud state. Not
     // populated or required by this lane.
@@ -148,20 +172,47 @@ function isValidStatus(value) {
   return Object.values(CLOUD_BACKUP_STATUS).includes(value);
 }
 
+export function isCloudBackupReviewStatus(status) {
+  return status === CLOUD_BACKUP_STATUS.CONFLICT || status === CLOUD_BACKUP_STATUS.REMOTE_CHANGED;
+}
+
+export function isHistoricalCloudBackupReview(queueState) {
+  return isCloudBackupReviewStatus(queueState?.status)
+    && queueState?.reviewOrigin === CLOUD_BACKUP_REVIEW_ORIGIN.LEGACY_HISTORICAL_REVIEW;
+}
+
+export function isCurrentCloudBackupReview(queueState) {
+  return isCloudBackupReviewStatus(queueState?.status)
+    && queueState?.reviewOrigin === CLOUD_BACKUP_REVIEW_ORIGIN.CURRENT_SYNC_FAILURE;
+}
+
 function normalizeQueueState(raw) {
   const base = defaultQueueState();
   if (!raw || typeof raw !== "object") return base;
+
+  const normalizedStatus = raw.status === "current"
+    ? CLOUD_BACKUP_STATUS.CLEAN
+    : raw.status === "failed"
+      ? CLOUD_BACKUP_STATUS.NEEDS_ATTENTION
+      : isValidStatus(raw.status) ? raw.status : base.status;
+  const explicitReviewOrigin = Object.values(CLOUD_BACKUP_REVIEW_ORIGIN).includes(raw.reviewOrigin)
+    ? raw.reviewOrigin
+    : CLOUD_BACKUP_REVIEW_ORIGIN.NONE;
+  const reviewOrigin = isCloudBackupReviewStatus(normalizedStatus)
+    ? (explicitReviewOrigin || CLOUD_BACKUP_REVIEW_ORIGIN.LEGACY_HISTORICAL_REVIEW)
+    : CLOUD_BACKUP_REVIEW_ORIGIN.NONE;
+  const purpose = Object.values(CLOUD_BACKUP_QUEUE_PURPOSE).includes(raw.purpose)
+    ? raw.purpose
+    : raw.pending && [PREVIOUS_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION, OLDER_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION].includes(raw.schemaVersion)
+      ? CLOUD_BACKUP_QUEUE_PURPOSE.LEGACY_COMPATIBILITY
+      : CLOUD_BACKUP_QUEUE_PURPOSE.NONE;
 
   return {
     ...base,
     ...raw,
     schemaVersion: CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
     pending: Boolean(raw.pending),
-    status: raw.status === "current"
-      ? CLOUD_BACKUP_STATUS.CLEAN
-      : raw.status === "failed"
-        ? CLOUD_BACKUP_STATUS.NEEDS_ATTENTION
-        : isValidStatus(raw.status) ? raw.status : base.status,
+    status: normalizedStatus,
     reasons: dedupeStrings(asArray(raw.reasons), MAX_RECENT_REASONS),
     domains: dedupeStrings(asArray(raw.domains), MAX_DOMAINS),
     severity: normalizeSeverity(raw.severity),
@@ -178,29 +229,86 @@ function normalizeQueueState(raw) {
     source: String(raw.source || "").trim(),
     documentId: String(raw.documentId || "").trim(),
     lastError: String(raw.lastError || "").trim(),
+    reviewOrigin,
+    purpose,
+    compatibilityMaterializedRevision: raw.compatibilityMaterializedRevision !== null
+      && raw.compatibilityMaterializedRevision !== undefined
+      && raw.compatibilityMaterializedRevision !== ""
+      && Number.isFinite(Number(raw.compatibilityMaterializedRevision))
+      ? Number(raw.compatibilityMaterializedRevision)
+      : null,
+    compatibilityMaterializedAt: Number(raw.compatibilityMaterializedAt) > 0
+      ? Number(raw.compatibilityMaterializedAt)
+      : null,
+    legacyCompatibilityEvidence: raw.legacyCompatibilityEvidence && typeof raw.legacyCompatibilityEvidence === "object"
+      ? raw.legacyCompatibilityEvidence
+      : null,
+    supersededCompatibilityFailure: raw.supersededCompatibilityFailure && typeof raw.supersededCompatibilityFailure === "object"
+      ? raw.supersededCompatibilityFailure
+      : null,
   };
+}
+
+function hasValidPersistedQueueShape(parsed, acceptedVersions = [CLOUD_BACKUP_QUEUE_SCHEMA_VERSION]) {
+  return Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    && acceptedVersions.includes(parsed.schemaVersion)
+    && typeof parsed.pending === "boolean" && isValidStatus(parsed.status)
+    && Array.isArray(parsed.reasons) && Array.isArray(parsed.domains)
+    && Number.isFinite(Number(parsed.localMutationRevision)) && Number(parsed.localMutationRevision) >= 0
+    && (parsed.syncingRevision === null || Number.isFinite(Number(parsed.syncingRevision)))
+    && typeof parsed.companyId === "string");
+}
+
+function migratePreviousQueueOnRead(target, parsed) {
+  const previousSchema = [
+    PREVIOUS_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
+    OLDER_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
+  ].includes(parsed?.schemaVersion);
+  const missingReviewOrigin = parsed?.schemaVersion === CLOUD_BACKUP_QUEUE_SCHEMA_VERSION
+    && isCloudBackupReviewStatus(parsed?.status)
+    && ![
+      CLOUD_BACKUP_REVIEW_ORIGIN.LEGACY_HISTORICAL_REVIEW,
+      CLOUD_BACKUP_REVIEW_ORIGIN.CURRENT_SYNC_FAILURE,
+    ].includes(parsed?.reviewOrigin);
+  if (!previousSchema && !missingReviewOrigin) return { migrated: false, state: normalizeQueueState(parsed) };
+  if (previousSchema && !hasValidPersistedQueueShape(parsed, [
+    PREVIOUS_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
+    OLDER_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
+  ])) {
+    return { migrated: false, state: normalizeQueueState(parsed) };
+  }
+  const state = normalizeQueueState(parsed);
+  try {
+    const serialized = JSON.stringify(state);
+    target?.setItem?.(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, serialized);
+    try { window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: STORAGE_KEYS.CLOUD_BACKUP_QUEUE, value: serialized } })); } catch {}
+    return { migrated: true, state };
+  } catch {
+    return { migrated: false, state };
+  }
 }
 
 // Unlike readCloudBackupQueueState(), this reader never invents a default
 // queue. It is for safety gates that must distinguish an actually persisted,
-// schema-v2 verified backup from a fresh device that merely looks clean.
+// current-schema verified backup from a fresh device that merely looks clean.
 export function readPersistedCloudBackupQueueState(storage) {
   try {
     const target = storage || (canUseStorage() ? localStorage : null);
     const raw = target?.getItem?.(STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
     if (raw === null || raw === undefined || raw === "") return { ok: false, exists: false, code: "queue_missing", state: null };
     const parsed = JSON.parse(raw);
-    const schemaValid = parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      && parsed.schemaVersion === CLOUD_BACKUP_QUEUE_SCHEMA_VERSION
-      && typeof parsed.pending === "boolean" && isValidStatus(parsed.status)
-      && Array.isArray(parsed.reasons) && Array.isArray(parsed.domains)
-      && Number.isFinite(Number(parsed.localMutationRevision)) && Number(parsed.localMutationRevision) >= 0
-      && (parsed.syncingRevision === null || Number.isFinite(Number(parsed.syncingRevision)))
-      && typeof parsed.companyId === "string";
+    if (![CLOUD_BACKUP_QUEUE_SCHEMA_VERSION, PREVIOUS_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION, OLDER_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION].includes(parsed?.schemaVersion)) {
+      return { ok: false, exists: true, code: "queue_unverified", state: null };
+    }
+    const migrated = migratePreviousQueueOnRead(target, parsed);
+    const candidate = migrated.state;
+    const schemaValid = hasValidPersistedQueueShape(candidate)
+      && (!isCloudBackupReviewStatus(candidate.status)
+        || [CLOUD_BACKUP_REVIEW_ORIGIN.LEGACY_HISTORICAL_REVIEW, CLOUD_BACKUP_REVIEW_ORIGIN.CURRENT_SYNC_FAILURE].includes(candidate.reviewOrigin));
     if (!schemaValid) {
       return { ok: false, exists: true, code: "queue_unverified", state: null };
     }
-    return { ok: true, exists: true, raw, state: normalizeQueueState(parsed) };
+    return { ok: true, exists: true, raw: migrated.migrated ? JSON.stringify(candidate) : raw, state: candidate };
   } catch {
     return { ok: false, exists: true, code: "queue_unverified", state: null };
   }
@@ -261,7 +369,8 @@ export function readCloudBackupQueueState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
     if (!raw) return defaultQueueState();
-    return normalizeQueueState(JSON.parse(raw));
+    const parsed = JSON.parse(raw);
+    return migratePreviousQueueOnRead(localStorage, parsed).state;
   } catch {
     return defaultQueueState();
   }
@@ -310,8 +419,79 @@ export function buildBackupDirtyEvent(input = {}) {
     priority,
     source: String(input?.source || "").trim(),
     documentId: String(input?.documentId || "").trim(),
+    companyId: String(input?.companyId || "").trim(),
+    activeDeviceId: String(input?.activeDeviceId || "").trim(),
+    purpose: Object.values(CLOUD_BACKUP_QUEUE_PURPOSE).includes(input?.purpose)
+      ? input.purpose
+      : CLOUD_BACKUP_QUEUE_PURPOSE.NONE,
     createdAt: Number.isFinite(createdAtCandidate) && createdAtCandidate > 0 ? createdAtCandidate : nowTs(),
   };
+}
+
+function buildNextDirtyQueueState(current, normalizedEvent, revision) {
+  const ts = nowTs();
+  return {
+    ...current,
+    pending: true,
+    status: CLOUD_BACKUP_STATUS.PENDING,
+    localMutationRevision: revision,
+    syncingRevision: null,
+    reasons: dedupeStrings([...current.reasons, normalizedEvent.reason], MAX_RECENT_REASONS),
+    domains: dedupeStrings([...current.domains, ...normalizedEvent.domains], MAX_DOMAINS),
+    severity: higherSeverity(current.severity, normalizedEvent.severity),
+    priority: higherPriority(current.priority, normalizedEvent.priority),
+    createdAt: current.pending && current.createdAt ? current.createdAt : ts,
+    updatedAt: ts,
+    lastQueuedAt: ts,
+    nextRetryAt: null,
+    retryCount: 0,
+    lastErrorCode: "",
+    companyId: String(normalizedEvent.companyId || current.companyId || "").trim(),
+    activeDeviceId: String(normalizedEvent.activeDeviceId || current.activeDeviceId || "").trim(),
+    source: normalizedEvent.source || current.source,
+    documentId: normalizedEvent.documentId || current.documentId,
+    reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.NONE,
+    purpose: normalizedEvent.purpose,
+    compatibilityMaterializedRevision: null,
+    compatibilityMaterializedAt: null,
+    supersededCompatibilityFailure: null,
+  };
+}
+
+// The only normal business-mutation entry point. It stages all supplied
+// serialized post-state keys plus one next queue revision and asks the vault
+// runtime to atomically commit and publish them. No business event or cloud
+// observer can see this revision before every key in the set is durable.
+export async function commitAtomicCloudQueuedBusinessMutation({ writes = [], event = {}, ledgerMutations = [], skipGlobalQueue = false } = {}) {
+  const current = readCloudBackupQueueState();
+  const ledgerBacked = Array.isArray(ledgerMutations) && ledgerMutations.length > 0;
+  const revision = ledgerBacked ? null : Number(current.localMutationRevision || 0) + 1;
+  const queue = ledgerBacked ? current : buildNextDirtyQueueState(current, buildBackupDirtyEvent(event), revision);
+  const byKey = new Map();
+  (Array.isArray(writes) ? writes : []).forEach((write) => {
+    const key = String(write?.key || "").trim();
+    if (!key || key === STORAGE_KEYS.CLOUD_BACKUP_QUEUE || typeof write?.value !== "string") throw new Error("invalid_atomic_business_write");
+    byKey.set(key, write.value);
+  });
+  if (byKey.size < 1) throw new Error("invalid_atomic_business_write");
+  let appendedMutations = [];
+  if (ledgerBacked) {
+    const appended = appendCloudMutationRecords(readCloudMutationLedger(), ledgerMutations);
+    appendedMutations = appended.appended;
+    byKey.set(STORAGE_KEYS.CLOUD_MUTATION_LEDGER, JSON.stringify(appended.ledger));
+  } else if (!skipGlobalQueue) {
+    byKey.set(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify(queue));
+  }
+  // The last fence before anything becomes durable. A save handler can pass the
+  // React guard microseconds before another browser tab takes over, so the
+  // canonical owner rereads the CURRENT browser-surface record here rather than
+  // trusting a decision made at render time. Nothing above this line has been
+  // written: the queue revision and the appended ledger are still in memory, so
+  // refusing now leaves no business state, no ledger entry, and no advanced
+  // queue revision behind -- and reports the refusal instead of faking success.
+  if (!isBrowserSurfaceActive()) throw browserSurfaceInactiveError(event?.reason);
+  await runtimeCommitAtomicRecords([...byKey.entries()].map(([logicalKey, value]) => ({ logicalKey, value })));
+  return Object.freeze({ ok: true, revision, queue, ledgerBacked, skipGlobalQueue: Boolean(skipGlobalQueue), mutations: Object.freeze(appendedMutations), keys: Object.freeze([...byKey.keys()]) });
 }
 
 /**
@@ -345,6 +525,11 @@ export function markCloudBackupDirty(event) {
       activeDeviceId: String(normalizedEvent.activeDeviceId || current.activeDeviceId || "").trim(),
       source: normalizedEvent.source || current.source,
       documentId: normalizedEvent.documentId || current.documentId,
+      reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.NONE,
+      purpose: normalizedEvent.purpose,
+      compatibilityMaterializedRevision: null,
+      compatibilityMaterializedAt: null,
+      supersededCompatibilityFailure: null,
     };
 
     writeAutoBackupPauseSnapshot(null);
@@ -357,6 +542,57 @@ export function markCloudBackupDirty(event) {
       return defaultQueueState();
     }
   }
+}
+
+export function markCloudBootstrapPending(event = {}) {
+  return markCloudBackupDirty({
+    ...event,
+    purpose: CLOUD_BACKUP_QUEUE_PURPOSE.BOOTSTRAP,
+    reason: String(event?.reason || "first_cloud_bootstrap").trim() || "first_cloud_bootstrap",
+    source: String(event?.source || "automatic_first_bootstrap").trim() || "automatic_first_bootstrap",
+  });
+}
+
+export function isCloudBootstrapQueue(queueState) {
+  return queueState?.purpose === CLOUD_BACKUP_QUEUE_PURPOSE.BOOTSTRAP;
+}
+
+export function isLegacyCompatibilityQueue(queueState) {
+  return queueState?.purpose === CLOUD_BACKUP_QUEUE_PURPOSE.LEGACY_COMPATIBILITY;
+}
+
+// Pure builders: convergence owns proof acquisition and the encrypted atomic
+// ledger/queue commit. Never use the normal success transition here: that would
+// advance backup clocks and erase retry evidence without a new backup.
+export function isInactiveWorkspaceBaselineQueue(queue, { companyId, before } = {}) {
+  const materializedReview = isLegacyCompatibilityQueue(queue)
+    && queue.reviewOrigin === CLOUD_BACKUP_REVIEW_ORIGIN.CURRENT_SYNC_FAILURE
+    && Number.isSafeInteger(queue.localMutationRevision) && queue.localMutationRevision > 0
+    && queue.compatibilityMaterializedRevision === queue.localMutationRevision
+    && Number(queue.compatibilityMaterializedAt) > 0
+    && queue.legacyCompatibilityEvidence?.revision === queue.localMutationRevision
+    && Number.isSafeInteger(queue.legacyCompatibilityEvidence?.materializedMutationCount)
+    && queue.legacyCompatibilityEvidence.materializedMutationCount > 0;
+  return hasValidPersistedQueueShape(queue) && queue.pending === false
+    && queue.status === CLOUD_BACKUP_STATUS.CLEAN && queue.syncingRevision === null
+    && [CLOUD_BACKUP_QUEUE_PURPOSE.NONE, CLOUD_BACKUP_QUEUE_PURPOSE.LEGACY_COMPATIBILITY].includes(queue.purpose)
+    // Materialization transfers obligations to the ledger; it does not erase
+    // review provenance. This only permits proof evaluation, never queue clear.
+    && (!queue.reviewOrigin || materializedReview) && queue.nextRetryAt == null
+    && (!queue.companyId || queue.companyId === companyId)
+    && (!queue.lastErrorCode || (isLegacyCompatibilityQueue(queue) && queue.lastErrorCode === "identity_review_required"))
+    && [queue.createdAt, queue.updatedAt, queue.lastQueuedAt, queue.lastAttemptAt, queue.compatibilityMaterializedAt]
+      .every(value => value == null || (Number(value) > 0 && Number(value) < before));
+}
+
+export function buildWorkspaceBaselineRetiredQueue(queue, proof) {
+  if (!isInactiveWorkspaceBaselineQueue(queue, { companyId: proof?.companyId, before: proof?.startedAt })) return null;
+  if (!isLegacyCompatibilityQueue(queue)) return queue;
+  return { ...queue, pending: false, status: CLOUD_BACKUP_STATUS.CLEAN,
+    purpose: CLOUD_BACKUP_QUEUE_PURPOSE.NONE, lastError: "", lastErrorCode: "",
+    reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.NONE,
+    supersededCompatibilityFailure: { reason: "verified_workspace_baseline_superseded", verifiedAt: proof.verifiedAt,
+      previous: { ...queue } } };
 }
 
 /**
@@ -387,6 +623,7 @@ export function clearCloudBackupDirty(reason, { expectedRevision = null } = {}) 
         updatedAt: ts,
         lastError: "",
         lastErrorCode: "",
+        reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.NONE,
       });
     }
 
@@ -407,6 +644,7 @@ export function clearCloudBackupDirty(reason, { expectedRevision = null } = {}) 
       lastError: "",
       lastErrorCode: "",
       source: normalizedReason || current.source,
+      reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.NONE,
     };
 
     writeAutoBackupPauseSnapshot(null);
@@ -437,6 +675,7 @@ export function markCloudBackupSyncing({ companyId = "", activeDeviceId = "" } =
       activeDeviceId: String(activeDeviceId || current.activeDeviceId || "").trim(),
       lastAttemptAt: nowTs(),
       updatedAt: nowTs(),
+      reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.NONE,
     });
   } catch {
     return readCloudBackupQueueState();
@@ -447,7 +686,7 @@ export function markCloudBackupOfflinePending() {
   try {
     const current = readCloudBackupQueueState();
     if (!current.pending) return current;
-    return writeQueueState({ ...current, status: CLOUD_BACKUP_STATUS.OFFLINE_PENDING, syncingRevision: null, updatedAt: nowTs() });
+    return writeQueueState({ ...current, status: CLOUD_BACKUP_STATUS.OFFLINE_PENDING, syncingRevision: null, updatedAt: nowTs(), reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.NONE });
   } catch {
     return readCloudBackupQueueState();
   }
@@ -471,6 +710,7 @@ export function recordCloudBackupAttemptFailure(errorMessage, { retryDelayMs = 0
       nextRetryAt: retryDelayMs > 0 ? ts + Number(retryDelayMs) : null,
       syncingRevision: null,
       updatedAt: ts,
+      reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.NONE,
     };
 
     return writeQueueState(next);
@@ -504,6 +744,7 @@ export function markCloudBackupReviewRequired(reason, {
       lastError: String(reason || "").trim(),
       lastErrorCode: String(errorCode || "identity_review_required").trim(),
       updatedAt: nowTs(),
+      reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.CURRENT_SYNC_FAILURE,
     });
   } catch {
     return readCloudBackupQueueState();
@@ -671,6 +912,23 @@ export function migrateLegacyPersistedCloudBackupQueue({ storage = localStorage,
     return current.ok
       ? { ok: true, migrated: false, code: "queue_already_current", schemaBefore, schemaAfter: schemaBefore, previousRaw: raw }
       : { ok: false, migrated: false, code: "queue_legacy_invalid", schemaBefore, schemaAfter: schemaBefore, previousRaw: raw };
+  }
+  if ([PREVIOUS_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION, OLDER_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION].includes(schemaBefore)) {
+    const failPrevious = (code) => ({ ok: false, migrated: false, code, schemaBefore, schemaAfter: schemaBefore, previousRaw: raw });
+    if (!hasValidPersistedQueueShape(parsed, [PREVIOUS_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION, OLDER_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION])) return failPrevious("queue_legacy_invalid");
+    if (journalPresent(storage)) return failPrevious("queue_legacy_journal_present");
+    if (!verifiedActiveDevice(deviceAccess, companyId, activeDeviceId)) return failPrevious("queue_legacy_device_unverified");
+    const migrated = normalizeQueueState(parsed);
+    if (!writeRawTo(storage, STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify(migrated))) return failPrevious("queue_legacy_write_failed");
+    return {
+      ok: true,
+      migrated: true,
+      code: "",
+      schemaBefore,
+      schemaAfter: CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
+      previousRaw: raw,
+      state: migrated,
+    };
   }
   if (schemaBefore !== LEGACY_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION) {
     return { ok: false, migrated: false, code: "queue_legacy_unsupported", schemaBefore, schemaAfter: schemaBefore, previousRaw: raw };

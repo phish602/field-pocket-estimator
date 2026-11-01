@@ -3,10 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { computeTotals } from "../estimator/engine";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { translate, useLanguage } from "../lib/i18n";
 import {
   buildEstimateInvoiceSummary,
   INVOICE_TYPES,
   createInvoiceBuilderDraftFromEstimate,
+  commitStoredInvoices,
   createInvoiceDraftFromEstimate,
   readStoredInvoices,
   roundCurrency,
@@ -18,7 +20,7 @@ import {
   upsertProject,
   writeStoredProjects,
 } from "../utils/projects";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { commitStoredEstimateCollectionMutation } from "../lib/estimateCloudMutationPlan";
 import { removeCloudAssetBinding } from "../lib/cloudAssetBindings";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import {
@@ -204,19 +206,20 @@ function readLegacyInvoiceEstimateRecords() {
   }
 }
 
-function writeStoredEstimatesPreservingLegacy(nextEstimates) {
+export async function writeStoredEstimatesPreservingLegacy(nextEstimates, event = {}) {
+  const previousEstimateRecords = readSavedEstimatesList();
   const estimateRecords = Array.isArray(nextEstimates) ? nextEstimates : [];
   const legacyInvoiceRecords = readLegacyInvoiceEstimateRecords();
-  localStorage.setItem(ESTIMATES_KEY, JSON.stringify([...estimateRecords, ...legacyInvoiceRecords]));
+  const value = JSON.stringify([...estimateRecords, ...legacyInvoiceRecords]);
+  await commitStoredEstimateCollectionMutation({
+    previousEstimates: previousEstimateRecords,
+    nextEstimates: estimateRecords,
+    writes: [{ key: ESTIMATES_KEY, value }],
+    event: { reason: "estimate_data_saved", domains: ["estimates"], severity: "money_critical", source: "writeStoredEstimatesPreservingLegacy", ...event },
+  });
   try {
     window.dispatchEvent(new Event("estipaid:estimates-changed"));
   } catch {}
-  markCloudBackupDirty({
-    reason: "estimate_data_saved",
-    domains: ["estimates"],
-    severity: "money_critical",
-    source: "writeStoredEstimatesPreservingLegacy",
-  });
 }
 
 function readCustomers() {
@@ -456,6 +459,8 @@ function resolveComposerInvoiceAmount(form, summary) {
 }
 
 function resolveComposerValidationMessage(form, summary, lang) {
+  // Module-level helper: bind the shared dictionary to the language it was handed.
+  const t = (key, vars) => translate(lang, key, vars);
   const approvedTotal = roundCurrency(summary?.approvedTotal || 0);
   const remainingToInvoice = roundCurrency(summary?.remainingToInvoice || 0);
   const raw = String(form?.amountValue || "").trim();
@@ -465,9 +470,7 @@ function resolveComposerValidationMessage(form, summary, lang) {
 
   if (invoiceType === INVOICE_TYPES.FINAL && !raw) {
     if (remainingToInvoice <= 0) {
-      return lang === "es"
-        ? "No queda saldo por facturar para esta estimación."
-        : "Nothing remains to invoice for this estimate.";
+      return t("estimates.nothingRemainsInvoiceEstimate");
     }
     return "";
   }
@@ -477,27 +480,19 @@ function resolveComposerValidationMessage(form, summary, lang) {
   if (amountMode === INVOICE_AMOUNT_MODE_PERCENT) {
     const percentValue = roundCurrency(toNum(raw));
     if (!Number.isFinite(percentValue) || percentValue <= 0) {
-      return lang === "es"
-        ? "El porcentaje debe ser mayor que 0%."
-        : "Invoice percent must be greater than 0%.";
+      return t("estimates.invoicePercentMustGreaterThan0");
     }
     if (approvedTotal <= 0) {
-      return lang === "es"
-        ? "Esta estimación no tiene total aprobado disponible."
-        : "This estimate has no approved total available.";
+      return t("estimates.estimateHasNoApprovedTotalAvailable");
     }
   }
 
   if (!Number.isFinite(invoiceAmount) || invoiceAmount <= 0) {
-    return lang === "es"
-      ? "El monto de la factura debe ser mayor que $0.00."
-      : "Invoice amount must be greater than $0.00.";
+    return t("estimates.invoiceAmountMustGreaterThan0");
   }
 
   if (remainingToInvoice > 0 && invoiceAmount > remainingToInvoice + INVOICE_COMPOSER_EPSILON) {
-    return lang === "es"
-      ? `La factura excede el saldo restante por facturar (${money(remainingToInvoice)}).`
-      : `Invoice exceeds the remaining amount to invoice (${money(remainingToInvoice)}).`;
+    return t("estimates.invoiceExceedsRemaining", { amount: money(remainingToInvoice) });
   }
 
   return "";
@@ -530,14 +525,6 @@ function resolveMaterialsMode(doc) {
   return "itemized";
 }
 
-function hasMeaningfulAdditionalCharges(doc) {
-  const items = Array.isArray(doc?.additionalCharges?.items) ? doc.additionalCharges.items : [];
-  return items.some((item) => {
-    const qty = toNum(item?.qty);
-    const priceEach = toNum(item?.priceEach ?? item?.charge ?? item?.amount ?? item?.unitPrice);
-    return (qty * priceEach) > 0;
-  });
-}
 
 function toEstimatorState(doc) {
   const laborLines = Array.isArray(doc?.labor?.lines) ? doc.labor.lines : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
@@ -709,14 +696,12 @@ function calcBreakdown(e) {
 }
 
 export default function EstimatesScreen({
-  lang,
-  t,
   history,
   onOpenEstimate,
   onOpenProjectDetail,
   spinTick = 0,
-  requestedInvoiceComposerEstimateId = "",
-  onInvoiceComposerRequestHandled,
+  invoiceLaunchRequest = null,
+  onInvoiceLaunchRequestHandled,
   postSaveTarget = null,
   onPostSaveTargetConsumed,
   drilldownIntent = null,
@@ -724,6 +709,9 @@ export default function EstimatesScreen({
   snapshotReturn = null,
   onReturnToSnapshot,
 }) {
+  // Language and copy come from the app's one owner, not from props: the screen
+  // must follow a switch made anywhere else in the app without being re-mounted.
+  const { lang, t } = useLanguage();
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialPostSaveFilters = postSaveTarget?.type === "estimate" ? (postSaveTarget.filters || {}) : {};
   const [searchQuery, setSearchQuery] = useState(() => String(initialPostSaveFilters.searchQuery || ""));
@@ -948,7 +936,7 @@ export default function EstimatesScreen({
     }
   };
 
-  const runEstimateCardAction = (event, estimateId, action, handler) => {
+  const runEstimateCardAction = async (event, estimateId, action, handler) => {
     consumeEstimateActionEvent(event, estimateId, action, { preventDefault: true });
     const currentIntent = getCardActionIntent();
     const normalizedEstimateId = String(estimateId || "").trim();
@@ -959,7 +947,7 @@ export default function EstimatesScreen({
     ) {
       return;
     }
-    handler();
+    await handler();
     window.setTimeout(() => {
       const latestIntent = getCardActionIntent();
       if (
@@ -987,22 +975,22 @@ export default function EstimatesScreen({
     () => [
       {
         key: STATUS_DRAFT,
-        title: lang === "es" ? "Borrador" : "Draft",
+        title: t("estimates.draft"),
         items: draftEstimates,
       },
       {
         key: STATUS_PENDING,
-        title: lang === "es" ? "En espera de respuesta" : "Awaiting Response",
+        title: t("estimates.awaitingResponse"),
         items: pendingEstimates,
       },
       {
         key: STATUS_APPROVED,
-        title: lang === "es" ? "Aprobado" : "Approved",
+        title: t("estimates.approved"),
         items: approvedEstimates,
       },
       {
         key: STATUS_LOST,
-        title: lang === "es" ? "Perdido" : "Lost",
+        title: t("estimates.lost"),
         items: lostEstimates,
       },
     ],
@@ -1278,38 +1266,44 @@ export default function EstimatesScreen({
       nextActions.push({
         key: "approved-ready",
         tone: "approved",
-        title: lang === "es" ? "Crear facturas desde aprobados" : "Ready to Invoice",
-        detail: lang === "es"
-          ? `${approvedReady.count} ${approvedReady.count === 1 ? "estimado listo" : "estimados listos"} por ${money(approvedReady.value)}.`
-          : `${approvedReady.count} ${approvedReady.count === 1 ? "estimate is" : "estimates are"} ready to invoice for ${money(approvedReady.value)}.`,
+        title: t("estimates.readyInvoice"),
+        detail: t(
+          approvedReady.count === 1 ? "estimates.readyToInvoiceDetailOne" : "estimates.readyToInvoiceDetailOther",
+          { count: approvedReady.count, amount: money(approvedReady.value) }
+        ),
       });
     }
     if (pendingVisible.length > 0) {
       nextActions.push({
         key: "follow-up",
         tone: "pending",
-        title: lang === "es" ? "Seguimiento de espera" : "Awaiting Response",
-        detail: lang === "es"
-          ? `${pendingVisible.length} ${pendingVisible.length === 1 ? "estimado necesita respuesta" : "estimados necesitan respuesta"}.`
-          : `${pendingVisible.length} ${pendingVisible.length === 1 ? "estimate needs" : "estimates need"} follow-up.`,
+        title: t("estimates.awaitingResponse2"),
+        detail: t(
+          pendingVisible.length === 1 ? "estimates.awaitingFollowUpDetailOne" : "estimates.awaitingFollowUpDetailOther",
+          { count: pendingVisible.length }
+        ),
       });
     }
     if (lostVisible.length > 0) {
       nextActions.push({
         key: "lost",
         tone: "lost",
-        title: lang === "es" ? "Revisar pérdida de ingresos" : "Lost Revenue",
-        detail: lang === "es"
-          ? `${lostVisible.length} ${lostVisible.length === 1 ? "estimado perdido" : "estimados perdidos"} por ${money(lostVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0))}.`
-          : `${lostVisible.length} ${lostVisible.length === 1 ? "estimate is" : "estimates are"} marked lost for ${money(lostVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0))}.`,
+        title: t("estimates.lostRevenue"),
+        detail: t(
+          lostVisible.length === 1 ? "estimates.lostDetailOne" : "estimates.lostDetailOther",
+          {
+            count: lostVisible.length,
+            amount: money(lostVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0)),
+          }
+        ),
       });
     }
     if (nextActions.length === 0) {
       nextActions.push({
         key: "steady",
         tone: "approved",
-        title: lang === "es" ? "Pipeline estable" : "Stable Pipeline",
-        detail: lang === "es" ? "No hay acciones inmediatas visibles en los filtros actuales." : "No immediate revenue action is surfacing in the current filters.",
+        title: t("estimates.stablePipeline"),
+        detail: t("estimates.noImmediateRevenueActionSurfacingCurrent"),
       });
     }
 
@@ -1504,7 +1498,7 @@ export default function EstimatesScreen({
     finalizeOpen();
   };
 
-  const setEstimateStatus = (estimate, nextStatus, options = {}) => {
+  const setEstimateStatus = async (estimate, nextStatus, options = {}) => {
     const normalized = normalizeEstimateStatus(nextStatus);
     const target = getDocumentEditTarget(estimate, "estimate");
     const existing = readSavedEstimatesList();
@@ -1534,7 +1528,7 @@ export default function EstimatesScreen({
         setOpenErrorMessage("Unable to update this estimate because its identity is missing or ambiguous.");
         return false;
       }
-      writeStoredEstimatesPreservingLegacy(update.records);
+      await writeStoredEstimatesPreservingLegacy(update.records, { source: "EstimatesScreen.setEstimateStatus", documentId: target });
     } catch {
       setOpenErrorMessage("Unable to save the estimate status.");
       return false;
@@ -1585,7 +1579,7 @@ export default function EstimatesScreen({
   // (approved/accepted, converted, invoice-linked, or archived) and after an
   // explicit confirmation. This exists so estimates that were only "Awaiting
   // Response" because the app lacked a draft stage can be corrected.
-  const moveEstimateToDraft = (estimate) => {
+  const moveEstimateToDraft = async (estimate) => {
     const targetIdentity = estimateIdentity(estimate);
     const targetId = String(estimate?.id || "").trim();
     const stored = readSavedEstimatesList().find((item) => (
@@ -1598,18 +1592,14 @@ export default function EstimatesScreen({
 
     const mode = getEstimateDeleteMode(stored, readStoredInvoices(), readStoredProjects());
     if (mode.isApprovedLike || mode.isConverted || mode.hasLinkedInvoices) {
-      window.alert(lang === "es"
-        ? "Este estimado está conectado a historial comercial y no puede volver a Borrador."
-        : "This estimate is connected to business history and cannot be moved back to Draft.");
+      window.alert(t("estimates.estimateConnectedBusinessHistoryCannotMoved"));
       return;
     }
 
-    const confirmed = window.confirm(lang === "es"
-      ? "¿Mover estimado de vuelta a Borrador?\n\nHazlo solo si este estimado no fue enviado al cliente.\n\nLos estimados en borrador se pueden eliminar."
-      : "Move Estimate Back to Draft?\n\nOnly do this if this estimate has not been sent to the customer.\n\nDraft estimates can be deleted.");
+    const confirmed = window.confirm(t("estimates.moveEstimateBackDraftOnlyDo"));
     if (!confirmed) return;
 
-    setEstimateStatus(estimate, STATUS_DRAFT);
+    await setEstimateStatus(estimate, STATUS_DRAFT);
   };
 
   const shouldShowApprovalInvoicePrompt = (estimate) => {
@@ -1643,13 +1633,11 @@ export default function EstimatesScreen({
     setInvoiceComposerShowMore(false);
   };
 
-  const openInvoiceComposer = (estimate, invoiceType = INVOICE_TYPES.FINAL) => {
+  // Opens the inline billing setup on this estimate. Creation happens only in
+  // the canonical launcher once the user submits.
+  const openInvoiceSetup = (estimate, invoiceType = INVOICE_TYPES.FINAL) => {
     if (!estimate || estimate?.archived || normalizeEstimateStatus(estimate?.status) !== STATUS_APPROVED) {
       return false;
-    }
-
-    if (hasMeaningfulAdditionalCharges(estimate)) {
-      return openInvoiceBuilderFromEstimate(estimate);
     }
 
     const currentInvoices = readStoredInvoices();
@@ -1659,6 +1647,7 @@ export default function EstimatesScreen({
     }
 
     setInvoiceComposerTarget(estimate);
+    setExpanded((current) => ({ ...current, [String(estimate.id || "")]: true }));
     setInvoiceComposerForm(createInvoiceComposerForm(estimate, summary, invoiceType));
     setInvoiceComposerError("");
     setInvoiceComposerShowMore(false);
@@ -1673,30 +1662,53 @@ export default function EstimatesScreen({
     return resolved;
   };
 
-  const openInvoiceBuilderFromEstimate = (estimate) => {
+  // The single owner of estimate-to-invoice creation. `billing` is optional:
+  // without it the draft defaults to the full estimate or its remaining
+  // balance, and with it the user's chosen deposit/progress/amount/percent is
+  // honored. Everything downstream -- resolution, the mutation guard, the
+  // write, the edit target, navigation and the duplicate-launch lock -- happens
+  // here and nowhere else, so the billing setup never has to repeat any of it.
+  const openInvoiceBuilderFromEstimate = (estimate, billing = null) => {
     if (invoiceBuilderLaunchPromiseRef.current) return invoiceBuilderLaunchPromiseRef.current;
+    const reportError = typeof billing?.onError === "function" ? billing.onError : setOpenErrorMessage;
     const task = (async () => {
-      const target = resolveApprovedEstimateForInvoiceLaunch(estimate);
-      if (!target) return false;
+      const target = billing?.approvedEstimate || resolveApprovedEstimateForInvoiceLaunch(estimate);
+      if (target?.archived || normalizeEstimateStatus(target?.status) !== STATUS_APPROVED) {
+        reportError("This estimate is no longer available to invoice.");
+        return false;
+      }
+      if (!target) {
+        reportError("This estimate is no longer available to invoice.");
+        return false;
+      }
 
       const currentInvoices = readStoredInvoices();
-      const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices);
+      const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices, {
+        ...(billing?.invoiceType ? { invoiceType: billing.invoiceType } : {}),
+        ...(billing?.requestedValue ? { requestedValue: billing.requestedValue } : {}),
+        ...(billing?.dueDate ? { dueDate: billing.dueDate } : {}),
+        ...(billing?.note ? { note: billing.note } : {}),
+      });
       if (!created.ok || !created.draft) {
-        setOpenErrorMessage(created.message || "Unable to create an invoice from this estimate.");
+        reportError(created.message || "Unable to create an invoice from this estimate.");
         return false;
       }
 
       const mutationAccess = await ensureCanMutateBusinessData("local_save");
       if (!mutationAccess?.ok) {
-        window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+        reportError(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
         return false;
       }
 
       let nextInvoices;
       try {
-        nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
+        nextInvoices = (await commitStoredInvoices([created.draft, ...currentInvoices], {
+          source: "EstimatesScreen.convertEstimate",
+          documentId: created.draft.id,
+          ...(Array.isArray(billing?.additionalWrites) ? { additionalWrites: billing.additionalWrites } : {}),
+        })).invoices;
       } catch {
-        setOpenErrorMessage("Unable to save the invoice. The estimate was not changed.");
+        reportError("Unable to save the invoice. The estimate was not changed.");
         return false;
       }
       setInvoices(nextInvoices);
@@ -1727,71 +1739,82 @@ export default function EstimatesScreen({
   };
 
   const approveAndConvertEstimate = async (estimate) => {
-    const approved = setEstimateStatus(estimate, STATUS_APPROVED, { showInvoicePrompt: false });
-    if (!approved) return false;
-    const exactApprovedEstimate = resolveApprovedEstimateForInvoiceLaunch(estimate);
-    if (!exactApprovedEstimate) {
+    const target = getDocumentEditTarget(estimate, "estimate");
+    const existing = readSavedEstimatesList();
+    const update = updateResolvedDocumentEditTarget(
+      existing,
+      target,
+      "estimate",
+      (item) => ({ ...item, status: STATUS_APPROVED })
+    );
+    if (!update?.record || update.record.archived) {
       setOpenErrorMessage("The approved estimate could not be verified for conversion.");
       return false;
     }
-    return openInvoiceBuilderFromEstimate(exactApprovedEstimate);
+
+    const committed = await openInvoiceBuilderFromEstimate(update.record, {
+      approvedEstimate: update.record,
+      additionalWrites: [{
+        key: ESTIMATES_KEY,
+        value: JSON.stringify([...update.records, ...readLegacyInvoiceEstimateRecords()]),
+      }],
+    });
+    if (!committed) return false;
+
+    setEstimates((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      return list
+        .map((item) => (getDocumentEditTarget(item, "estimate") === target ? { ...item, status: STATUS_APPROVED } : item))
+        .sort(sortEstimatesByDateDesc);
+    });
+    setExpanded({});
+    return true;
   };
 
+  // Snapshot's "Create Invoice" asks for the same conversion the Estimates
+  // screen performs itself, so it launches the canonical builder rather than
+  // the quick composer. The builder re-resolves the stored estimate and applies
+  // its own approved/archived checks, its mutation guard, and its duplicate
+  // launch lock, so this bridge only has to name the estimate.
   useEffect(() => {
-    const requestedId = String(requestedInvoiceComposerEstimateId || "").trim();
+    const requestedId = String(invoiceLaunchRequest?.estimateId || "").trim();
     if (!requestedId) return;
     const target = (Array.isArray(estimates) ? estimates : []).find(
       (estimate) => String(estimate?.id || "").trim() === requestedId
     );
-    if (!target) {
-      if (typeof onInvoiceComposerRequestHandled === "function") {
-        onInvoiceComposerRequestHandled();
-      }
-      return;
+    if (target) {
+      // "options" opens the billing setup here; anything else goes straight to
+      // the canonical builder. Either way creation stays with the launcher.
+      if (String(invoiceLaunchRequest?.mode || "") === "options") openInvoiceSetup(target);
+      else openInvoiceBuilderFromEstimate(target);
     }
-    openInvoiceComposer(target);
-    if (typeof onInvoiceComposerRequestHandled === "function") {
-      onInvoiceComposerRequestHandled();
+    if (typeof onInvoiceLaunchRequestHandled === "function") {
+      onInvoiceLaunchRequestHandled();
     }
-  }, [requestedInvoiceComposerEstimateId, estimates, onInvoiceComposerRequestHandled]);
+  }, [invoiceLaunchRequest, estimates, onInvoiceLaunchRequestHandled]);
 
-  const submitInvoiceComposer = async () => {
+  // Billing setup only. It collects the user's intent and hands it to the one
+  // canonical launcher above -- it does not create ids, authorize mutations,
+  // write invoices, set edit targets, or navigate. Those responsibilities moved
+  // out so there is a single creation owner.
+  const submitInvoiceSetup = async () => {
     if (!invoiceComposerTarget) return false;
+    setInvoiceComposerError("");
 
-    const currentInvoices = readStoredInvoices();
-    const created = createInvoiceDraftFromEstimate(invoiceComposerTarget, currentInvoices, {
+    const launched = await openInvoiceBuilderFromEstimate(invoiceComposerTarget, {
       invoiceType: invoiceComposerForm.invoiceType,
       requestedValue: buildComposerRequestedValue(invoiceComposerForm),
       dueDate: invoiceComposerForm.dueDate,
       note: invoiceComposerForm.note,
+      // Failures belong in the setup dialog so the user can correct the amount
+      // rather than being dropped somewhere with a screen-level message.
+      onError: (message) => setInvoiceComposerError(
+        message || (t("estimates.unableCreateInvoice"))
+      ),
     });
 
-    if (!created.ok || !created.draft) {
-      setInvoiceComposerError(
-        created?.message || (lang === "es" ? "No se pudo crear la factura." : "Unable to create invoice.")
-      );
-      return false;
-    }
-
-    const mutationAccess = await ensureCanMutateBusinessData("local_save");
-    if (!mutationAccess?.ok) {
-      setInvoiceComposerError(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
-      return false;
-    }
-
-    const nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
-    setInvoices(nextInvoices);
+    if (!launched) return false;
     closeInvoiceComposer();
-    try {
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
-      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(created.draft.id || ""));
-    } catch {}
-    try {
-      window.dispatchEvent(new Event("estipaid:invoices-changed"));
-    } catch {}
-    try {
-      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
-    } catch {}
     return true;
   };
 
@@ -1823,7 +1846,7 @@ export default function EstimatesScreen({
       const { archived, archivedAt, ...rest } = item;
       return rest;
     });
-    writeStoredEstimatesPreservingLegacy(next);
+    await writeStoredEstimatesPreservingLegacy(next, { source: "EstimatesScreen.restoreEstimate", documentId: targetId });
   };
 
   const onConfirmDelete = async () => {
@@ -1855,13 +1878,13 @@ export default function EstimatesScreen({
           : String(item?.id || "").trim() === deletedId;
         return matches ? { ...item, archived: true, archivedAt: new Date().toISOString() } : item;
       });
-      writeStoredEstimatesPreservingLegacy(next);
+      await writeStoredEstimatesPreservingLegacy(next, { source: "EstimatesScreen.archiveEstimate", documentId: deletedId });
     } else {
       const next = existing.filter((item) => {
         if (targetIdentity) return estimateIdentity(item) !== targetIdentity;
         return String(item?.id || "").trim() !== deletedId;
       });
-      writeStoredEstimatesPreservingLegacy(next);
+      await writeStoredEstimatesPreservingLegacy(next, { source: "EstimatesScreen.deleteEstimate", documentId: deletedId });
       removeCloudAssetBinding("estimate", deletedId);
 
       if (deletedId) {
@@ -1896,18 +1919,18 @@ export default function EstimatesScreen({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [deleteConfirmOpen]);
 
-  const labelSaved = lang === "es" ? "Estimaciones guardadas" : "Saved Estimates";
-  const labelOpen = lang === "es" ? "Abrir" : "Open";
-  const labelDetails = lang === "es" ? "Detalles" : "Details";
-  const labelHide = lang === "es" ? "Ocultar" : "Hide";
-  const labelDuplicate = lang === "es" ? "Duplicar" : "Duplicate";
-  const labelTotalMetric = lang === "es" ? "TOTAL" : "TOTAL";
-  const labelMarginMetric = lang === "es" ? "MARGEN" : "MARGIN";
+  const labelSaved = t("estimates.savedEstimates");
+  const labelOpen = t("estimates.open");
+  const labelDetails = t("estimates.details");
+  const labelHide = t("estimates.hide");
+  const labelDuplicate = t("estimates.duplicate");
+  const labelTotalMetric = t("estimates.total");
+  const labelMarginMetric = t("estimates.margin");
 
-  const labelRevenue = lang === "es" ? "Ingresos" : "Revenue";
-  const labelInternal = lang === "es" ? "Costo interno" : "Internal cost";
-  const labelProfit = lang === "es" ? "Ganancia" : "Profit";
-  const labelMargin = lang === "es" ? "Margen" : "Margin";
+  const labelRevenue = t("estimates.revenue");
+  const labelInternal = t("estimates.internalCost");
+  const labelProfit = t("estimates.profit");
+  const labelMargin = t("estimates.margin2");
   const visibleEstimatesCount = visibleEstimates.length;
   const labelSavedWithCount = `${labelSaved} (${visibleEstimatesCount})`;
   const deleteTargetNumber = String(
@@ -1954,7 +1977,7 @@ export default function EstimatesScreen({
         window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
         return;
       }
-      writeStoredEstimatesPreservingLegacy([duplicate, ...existing]);
+      await writeStoredEstimatesPreservingLegacy([duplicate, ...existing], { source: "EstimatesScreen.duplicateEstimate", documentId: duplicate.id });
 
       setExpanded({});
 
@@ -2063,7 +2086,7 @@ export default function EstimatesScreen({
       : 0
   );
   const invoiceComposerEstimateLabel = String(invoiceComposerTarget?.projectName || "").trim()
-    || (lang === "es" ? "Estimación aprobada" : "Approved estimate");
+    || (t("estimates.approvedEstimate"));
   const invoiceComposerContextItems = [
     invoiceComposerTarget?.customerName
       ? {
@@ -2079,31 +2102,31 @@ export default function EstimatesScreen({
       : null,
   ].filter(Boolean);
   const invoiceComposerTypeOptions = [
-    { value: INVOICE_TYPES.DEPOSIT, label: lang === "es" ? "Depósito" : "Deposit" },
-    { value: INVOICE_TYPES.PROGRESS, label: lang === "es" ? "Progreso" : "Progress" },
-    { value: INVOICE_TYPES.FINAL, label: lang === "es" ? "Final" : "Final" },
-    { value: INVOICE_TYPES.CUSTOM, label: lang === "es" ? "Personalizada" : "Custom" },
+    { value: INVOICE_TYPES.DEPOSIT, label: t("estimates.deposit") },
+    { value: INVOICE_TYPES.PROGRESS, label: t("estimates.progress") },
+    { value: INVOICE_TYPES.FINAL, label: t("estimates.final") },
+    { value: INVOICE_TYPES.CUSTOM, label: t("estimates.custom") },
   ];
   const invoiceComposerSummaryItems = [
     {
       key: "contract-total",
-      label: lang === "es" ? "Total contrato" : "Contract total",
+      label: t("estimates.contractTotal"),
       value: money(invoiceComposerSummary?.approvedTotal),
     },
     {
       key: "already-invoiced",
-      label: lang === "es" ? "Ya facturado" : "Already invoiced",
+      label: t("estimates.alreadyInvoiced"),
       value: money(invoiceComposerSummary?.invoicedTotal),
     },
     {
       key: "remaining",
-      label: lang === "es" ? "Restante" : "Remaining",
+      label: t("estimates.remaining"),
       value: money(invoiceComposerSummary?.remainingToInvoice),
       tone: "remaining",
     },
     {
       key: "this-invoice",
-      label: lang === "es" ? "Esta factura" : "This invoice",
+      label: t("estimates.thisInvoice"),
       value: money(invoiceComposerThisInvoice),
       tone: "primary",
     },
@@ -2374,6 +2397,63 @@ export default function EstimatesScreen({
     setInvoiceComposerError("");
   };
 
+  const invoiceOptionsSetup = invoiceComposerTarget ? (
+    <section className="pe-card pe-card-content" data-invoice-options="true" aria-label={t("estimates.invoiceOptions")} style={{ marginTop: 10, display: "grid", gap: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+        <div style={{ display: "grid", gap: 4 }}>
+          <div style={invoiceComposerToneLabelStyle}>{t("estimates.invoiceOptions")}</div>
+          <div style={{ fontSize: 16, fontWeight: 900 }}>{invoiceComposerEstimateLabel}</div>
+          <div style={{ fontSize: 12.5, opacity: 0.74 }}>{t("estimates.chooseHowBillBeforeOpeningBuilder")}</div>
+        </div>
+        <button type="button" className="pe-btn pe-btn-ghost" onClick={closeInvoiceComposer} style={{ minHeight: 34, padding: "7px 10px" }}>{t("estimates.cancel")}</button>
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        <div style={invoiceComposerSectionLabelStyle}>{t("estimates.invoiceType")}</div>
+        <div style={invoiceComposerSegmentWrapStyle}>
+          {invoiceComposerTypeOptions.map((option) => (
+            <button key={option.value} type="button" className="pe-btn pe-btn-ghost" onClick={() => handleInvoiceComposerTypeChange(option.value)} style={{ ...invoiceComposerSegmentBtnStyle, ...(invoiceComposerForm.invoiceType === option.value ? invoiceComposerSegmentBtnActiveStyle : invoiceComposerSegmentBtnIdleStyle) }}>{option.label}</button>
+          ))}
+        </div>
+      </div>
+      <div style={invoiceComposerFieldGridStyle}>
+        <div style={invoiceComposerFieldBlockStyle}>
+          <label style={invoiceComposerSectionLabelStyle} htmlFor="invoice-options-amount">{t("estimates.invoiceAmount")}</label>
+          <div style={invoiceComposerAmountRowStyle}>
+            <input id="invoice-options-amount" type="text" inputMode="decimal" className="pe-input" value={invoiceComposerForm.amountValue} placeholder={invoiceComposerForm.invoiceType === INVOICE_TYPES.FINAL ? (t("estimates.leaveBlankUseRemainingBalance")) : (invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT ? "25" : "2500")} onChange={(evt) => { setInvoiceComposerForm((prev) => ({ ...prev, amountValue: evt.target.value })); setInvoiceComposerError(""); }} style={{ width: "100%" }} />
+            <div style={invoiceComposerAmountModeWrapStyle}>
+              <button type="button" aria-label={t("estimates.dollarAmount")} className="pe-btn pe-btn-ghost" onClick={() => handleInvoiceComposerAmountModeChange(INVOICE_AMOUNT_MODE_AMOUNT)} style={{ ...invoiceComposerModeBtnStyle, ...(invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_AMOUNT ? invoiceComposerModeBtnActiveStyle : invoiceComposerModeBtnIdleStyle) }}>$</button>
+              <button type="button" aria-label={t("estimates.percentAmount")} className="pe-btn pe-btn-ghost" onClick={() => handleInvoiceComposerAmountModeChange(INVOICE_AMOUNT_MODE_PERCENT)} style={{ ...invoiceComposerModeBtnStyle, ...(invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT ? invoiceComposerModeBtnActiveStyle : invoiceComposerModeBtnIdleStyle) }}>%</button>
+            </div>
+          </div>
+          {invoiceComposerForm.invoiceType === INVOICE_TYPES.DEPOSIT ? (
+            <div style={invoiceComposerPresetWrapStyle}>
+              {[10, 25, 50].map((percent) => {
+                const disabled = invoiceComposerAvailablePercent > 0 && percent > invoiceComposerAvailablePercent + INVOICE_COMPOSER_EPSILON;
+                const isActive = invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT && roundCurrency(toNum(invoiceComposerForm.amountValue)) === percent;
+                return <button key={`deposit-${percent}`} type="button" className="pe-btn pe-btn-ghost" disabled={disabled} onClick={() => { setInvoiceComposerForm((prev) => ({ ...prev, amountMode: INVOICE_AMOUNT_MODE_PERCENT, amountValue: String(percent) })); setInvoiceComposerError(""); }} style={{ ...invoiceComposerPresetBtnStyle, ...(isActive ? invoiceComposerPresetBtnActiveStyle : invoiceComposerPresetBtnIdleStyle) }}>{percent}%</button>;
+              })}
+            </div>
+          ) : null}
+        </div>
+        <div style={invoiceComposerFieldBlockStyle}>
+          <label style={invoiceComposerSectionLabelStyle} htmlFor="invoice-options-due-date">{t("estimates.dueDate")}</label>
+          <input id="invoice-options-due-date" type="date" className="pe-input" value={invoiceComposerForm.dueDate} onChange={(evt) => { setInvoiceComposerForm((prev) => ({ ...prev, dueDate: evt.target.value })); setInvoiceComposerError(""); }} />
+          <label style={invoiceComposerSectionLabelStyle} htmlFor="invoice-options-note">{t("estimates.note")}</label>
+          <textarea id="invoice-options-note" className="pe-input pe-textarea" value={invoiceComposerForm.note} onChange={(evt) => { setInvoiceComposerForm((prev) => ({ ...prev, note: evt.target.value })); setInvoiceComposerError(""); }} rows={3} placeholder={t("estimates.optionalNoteInvoice")} style={{ minHeight: 72, resize: "vertical" }} />
+        </div>
+      </div>
+      <div style={invoiceComposerSummaryCardStyle}>
+        <div style={invoiceComposerSectionLabelStyle}>{t("estimates.billingSummary")}</div>
+        <div style={invoiceComposerSummaryGridStyle}>{invoiceComposerSummaryItems.map((item) => <div key={item.key} style={{ ...invoiceComposerSummaryItemStyle, ...(item.tone === "primary" ? invoiceComposerSummaryItemPrimaryStyle : item.tone === "remaining" ? invoiceComposerSummaryItemRemainingStyle : null) }}><div style={{ fontSize: 12.5, opacity: 0.72 }}>{item.label}</div><div style={invoiceComposerSummaryValueStyle}>{item.value}</div></div>)}</div>
+      </div>
+      {invoiceComposerMessage ? <div role="alert" style={{ fontSize: 13, color: "rgba(254, 202, 202, 0.95)", border: "1px solid rgba(248,113,113,0.36)", background: "rgba(127,29,29,0.18)", borderRadius: 12, padding: "10px 12px" }}>{invoiceComposerMessage}</div> : null}
+      <div style={invoiceComposerFooterStyle}>
+        <button type="button" className="pe-btn pe-btn-ghost" onClick={closeInvoiceComposer} style={invoiceComposerFooterBtnStyle}>{t("estimates.cancel")}</button>
+        <button type="button" className="pe-btn" onClick={submitInvoiceSetup} style={invoiceComposerPrimaryBtnStyle}>{t("estimates.continueInvoiceBuilder")}</button>
+      </div>
+    </section>
+  ) : null;
+
   return (
     <section className="pe-section">
       <div className="pe-card pe-company-shell">
@@ -2425,17 +2505,23 @@ export default function EstimatesScreen({
           >
             <div style={{ display: "grid", gap: 6 }}>
               <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
-                {lang === "es" ? "Pipeline de ingresos" : "Revenue pipeline"}
+                {t("estimates.revenuePipeline")}
               </div>
               <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
-                {lang === "es" ? "Estimados listos para avanzar" : "Estimates in Motion"}
+                {t("estimates.estimatesMotion")}
               </div>
               <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
                 {estimatePipelineSummary.highestValueEstimate
-                  ? (lang === "es"
-                    ? `El estimado más grande visible es ${money(estimatePipelineSummary.highestValueEstimate?.total)} para ${String(estimatePipelineSummary.highestValueEstimate?.projectName || estimatePipelineSummary.highestValueEstimate?.customerName || "").trim() || "este trabajo"}.`
-                    : `The highest visible estimate is ${money(estimatePipelineSummary.highestValueEstimate?.total)} for ${String(estimatePipelineSummary.highestValueEstimate?.projectName || estimatePipelineSummary.highestValueEstimate?.customerName || "").trim() || "this job"}.`)
-                  : (lang === "es" ? "Usa esta vista para priorizar seguimiento, aprobación y facturación." : "Use this view to prioritize follow-up, approval, and invoicing.")}
+                  ? t("estimates.highestVisibleEstimate", {
+                      amount: money(estimatePipelineSummary.highestValueEstimate?.total),
+                      // Project and customer names are business data: shown as entered, never translated.
+                      job: String(
+                        estimatePipelineSummary.highestValueEstimate?.projectName
+                        || estimatePipelineSummary.highestValueEstimate?.customerName
+                        || ""
+                      ).trim() || t("estimates.thisJobFallback"),
+                    })
+                  : (t("estimates.useViewPrioritizeFollowUpApproval"))}
               </div>
             </div>
 
@@ -2449,14 +2535,14 @@ export default function EstimatesScreen({
                   // rather than a subset, so it stays informational instead of
                   // pretending to be a filter.
                   key: "visible-value",
-                  label: lang === "es" ? "Valor visible" : "Visible value",
+                  label: t("estimates.visibleValue"),
                   value: money(estimatePipelineSummary.totalValue),
-                  detail: `${estimatePipelineSummary.totalCount} ${estimatePipelineSummary.totalCount === 1 ? (lang === "es" ? "estimado" : "estimate") : (lang === "es" ? "estimados" : "estimates")}`,
+                  detail: `${estimatePipelineSummary.totalCount} ${estimatePipelineSummary.totalCount === 1 ? (t("estimates.estimate")) : (t("estimates.estimates"))}`,
                   tone: "neutral",
                 },
                 {
                   key: "awaiting-response",
-                  label: lang === "es" ? "En espera de respuesta" : "Awaiting response",
+                  label: t("estimates.awaitingResponse3"),
                   value: String(estimatePipelineSummary.pendingCount),
                   detail: money(estimatePipelineSummary.pendingValue),
                   tone: "pending",
@@ -2464,17 +2550,17 @@ export default function EstimatesScreen({
                 },
                 {
                   key: "approved-ready",
-                  label: lang === "es" ? "Listo para facturar" : "Ready for invoice",
+                  label: t("estimates.readyInvoice2"),
                   value: money(estimatePipelineSummary.approvedReady.value),
-                  detail: `${estimatePipelineSummary.approvedReady.count} ${estimatePipelineSummary.approvedReady.count === 1 ? (lang === "es" ? "estimado" : "estimate") : (lang === "es" ? "estimados" : "estimates")}`,
+                  detail: `${estimatePipelineSummary.approvedReady.count} ${estimatePipelineSummary.approvedReady.count === 1 ? (t("estimates.estimate")) : (t("estimates.estimates"))}`,
                   tone: "approved",
                   drilldown: ESTIMATE_DRILLDOWNS.READY_TO_INVOICE,
                 },
                 {
                   key: "high-value",
-                  label: lang === "es" ? "Alto valor" : "High value",
+                  label: t("estimates.highValue"),
                   value: String(estimatePipelineSummary.highValueCount),
-                  detail: lang === "es" ? "por encima de $10k" : "over $10k",
+                  detail: t("estimates.over10k"),
                   tone: "approved",
                   drilldown: ESTIMATE_DRILLDOWNS.HIGH_VALUE,
                 },
@@ -2532,7 +2618,7 @@ export default function EstimatesScreen({
                     className="pe-estimates-kpi-card"
                     onClick={() => togglePipelineFocus(item.drilldown)}
                     aria-pressed={isActive}
-                    aria-label={`${item.label}: ${item.value}. ${isActive ? (lang === "es" ? "Quitar enfoque" : "Clear focus") : (lang === "es" ? "Enfocar estimados" : "Focus these estimates")}`}
+                    aria-label={`${item.label}: ${item.value}. ${isActive ? (t("estimates.clearFocus")) : (t("estimates.focusTheseEstimates"))}`}
                     style={{
                       ...cardStyle,
                       textAlign: "left",
@@ -2606,7 +2692,7 @@ export default function EstimatesScreen({
                 <button
                   type="button"
                   className="pe-btn pe-btn-ghost"
-                  aria-label={lang === "es" ? "Limpiar búsqueda" : "Clear search"}
+                  aria-label={t("estimates.clearSearch")}
                   onClick={() => { setSearchQuery(""); setHighlightEstimateId(""); }}
                   style={{
                     position: "absolute",
@@ -2631,7 +2717,7 @@ export default function EstimatesScreen({
                 <div
                   id="estimate-typeahead-list"
                   role="listbox"
-                  aria-label={lang === "es" ? "Estimados coincidentes" : "Matching estimates"}
+                  aria-label={t("estimates.matchingEstimates")}
                   style={{
                     position: "absolute",
                     top: "calc(100% + 6px)",
@@ -2651,24 +2737,24 @@ export default function EstimatesScreen({
                 >
                   {estimateTypeaheadMatches.length === 0 ? (
                     <div style={{ padding: "9px 11px", fontSize: 12.5, color: "rgba(208,219,228,0.6)" }}>
-                      {lang === "es" ? "Sin estimados coincidentes" : "No matching estimates"}
+                      {t("estimates.noMatchingEstimates")}
                     </div>
                   ) : estimateTypeaheadMatches.map((estimate) => {
                     const rowId = String(estimate?.id || "");
                     const meta = estimateDisplayMeta.get(rowId) || {};
                     const numberText = String(estimate?.estimateNumber || "").trim();
-                    const rowCustomer = String(meta.customerName || estimate?.customerName || (lang === "es" ? "Sin cliente" : "No customer")).trim();
+                    const rowCustomer = String(meta.customerName || estimate?.customerName || (t("estimates.noCustomer"))).trim();
                     const rowProject = String(meta.projectName || estimate?.projectName || estimate?.workTitle || estimate?.jobTitle || "").trim();
                     const rowStatus = normalizeEstimateStatus(estimate?.status);
                     const rowStatusLabel = estimate?.archived
-                      ? (lang === "es" ? "Archivado" : "Archived")
+                      ? (t("estimates.archived"))
                       : rowStatus === STATUS_APPROVED
-                        ? (lang === "es" ? "Aprobado" : "Approved")
+                        ? (t("estimates.approved"))
                         : rowStatus === STATUS_LOST
-                          ? (lang === "es" ? "Perdido" : "Lost")
+                          ? (t("estimates.lost"))
                           : rowStatus === STATUS_DRAFT
-                            ? (lang === "es" ? "Borrador" : "Draft")
-                            : (lang === "es" ? "En espera de respuesta" : "Awaiting Response");
+                            ? (t("estimates.draft"))
+                            : (t("estimates.awaitingResponse"));
                     const rowTotal = money(estimate?.total);
                     return (
                       <button
@@ -2692,7 +2778,7 @@ export default function EstimatesScreen({
                       >
                         <span style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
                           <span style={{ fontWeight: 800, fontSize: 13.5 }}>
-                            {numberText ? `#${numberText}` : (lang === "es" ? "Estimado sin número" : "Untitled estimate")}
+                            {numberText ? `#${numberText}` : (t("estimates.untitledEstimate"))}
                           </span>
                           <span style={{ fontSize: 12.5, color: "rgba(215,225,233,0.82)" }}>{rowCustomer}</span>
                           <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(148,163,184,0.85)" }}>{rowStatusLabel}</span>
@@ -2742,8 +2828,8 @@ export default function EstimatesScreen({
                 onClick={() => setShowArchived((value) => !value)}
               >
                 {showArchived
-                  ? (lang === "es" ? "Ver activas" : "Show active")
-                  : (lang === "es" ? "Ver archivadas" : "Show archived")}
+                  ? (t("estimates.showActive"))
+                  : (t("estimates.showArchived"))}
               </button>
 
               <button
@@ -2763,7 +2849,7 @@ export default function EstimatesScreen({
                 <button
                   type="button"
                   onClick={() => setPipelineFocus("")}
-                  aria-label={lang === "es" ? "Quitar enfoque del pipeline" : "Clear pipeline focus"}
+                  aria-label={t("estimates.clearPipelineFocus")}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -2781,7 +2867,7 @@ export default function EstimatesScreen({
                   {/* "Focused", not "Showing": the rest of the board is still
                       there, it just is not what this metric points at. */}
                   <span style={{ opacity: 0.72, fontWeight: 700 }}>
-                    {lang === "es" ? "Enfocado" : "Focused"}
+                    {t("estimates.focused")}
                   </span>
                   <span>{drilldownLabel(DRILLDOWN_SCOPES.ESTIMATES, pipelineFocus, lang)}</span>
                   <span aria-hidden="true" style={{ opacity: 0.75 }}>✕</span>
@@ -2809,7 +2895,7 @@ export default function EstimatesScreen({
                 }
               }}
             >
-              <div className="pe-revenue-label">{lang === "es" ? "Pendiente" : "Pending"}</div>
+              <div className="pe-revenue-label">{t("estimates.pending")}</div>
               <div className={`pe-revenue-value${revenueValuePulse.pending ? " updated" : ""}`}>{money(revenueForecast.pendingRevenue)}</div>
             </div>
             <div
@@ -2824,7 +2910,7 @@ export default function EstimatesScreen({
                 }
               }}
             >
-              <div className="pe-revenue-label">{lang === "es" ? "Aprobado" : "Approved"}</div>
+              <div className="pe-revenue-label">{t("estimates.approved")}</div>
               <div className={`pe-revenue-value${revenueValuePulse.approved ? " updated" : ""}`}>{money(revenueForecast.approvedRevenue)}</div>
             </div>
             <div
@@ -2839,7 +2925,7 @@ export default function EstimatesScreen({
                 }
               }}
             >
-              <div className="pe-revenue-label">{lang === "es" ? "Perdido" : "Lost"}</div>
+              <div className="pe-revenue-label">{t("estimates.lost")}</div>
               <div className={`pe-revenue-value${revenueValuePulse.lost ? " updated" : ""}`}>{money(revenueForecast.lostRevenue)}</div>
             </div>
           </div>
@@ -2914,12 +3000,12 @@ export default function EstimatesScreen({
                     ? revenueForecast.draftRevenue
                     : revenueForecast.pendingRevenue;
               const sectionRevenueText = section.key === STATUS_APPROVED
-                ? (lang === "es" ? "de ingresos ganados" : "won revenue")
+                ? (t("estimates.wonRevenue"))
                 : section.key === STATUS_LOST
-                  ? (lang === "es" ? "de ingresos perdidos" : "lost revenue")
+                  ? (t("estimates.lostRevenue2"))
                   : section.key === STATUS_DRAFT
-                    ? (lang === "es" ? "en borrador" : "draft value")
-                    : (lang === "es" ? "de ingresos pendientes" : "pending revenue");
+                    ? (t("estimates.draftValue"))
+                    : (t("estimates.pendingRevenue"));
 
               return (
                 <div
@@ -2998,12 +3084,12 @@ export default function EstimatesScreen({
                         </div>
                         <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(205,217,226,0.64)" }}>
                           {section.key === STATUS_APPROVED
-                            ? (lang === "es" ? "Los aprobados con saldo por facturar muestran la siguiente acción primero." : "Approved estimates with value left to invoice surface the next action first.")
+                            ? (t("estimates.approvedEstimatesValueLeftInvoiceSurface"))
                             : section.key === STATUS_LOST
-                            ? (lang === "es" ? "Los perdidos permanecen visibles para revisar ingresos caídos." : "Lost estimates stay visible so dropped revenue is easy to review.")
+                            ? (t("estimates.lostEstimatesStayVisibleSoDropped"))
                             : section.key === STATUS_PENDING
-                            ? (lang === "es" ? "Los estimados enviados esperan respuesta del cliente." : "Sent estimates are waiting on a customer response.")
-                            : (lang === "es" ? "Los borradores aún no se han enviado a un cliente." : "Drafts have not been sent to a customer yet.")}
+                            ? (t("estimates.sentEstimatesWaitingCustomerResponse"))
+                            : (t("estimates.draftsHaveNotBeenSentCustomer"))}
                         </div>
                       </div>
                     </div>
@@ -3035,7 +3121,7 @@ export default function EstimatesScreen({
                         : null;
                       const isActiveCard = isOpen;
                       const siteAddr = String(displayMeta.siteAddress || e?.job?.address || e?.siteAddress || e?.customer?.address || "").trim();
-                      const customerLabel = displayMeta.customerName || (lang === "es" ? "Sin cliente" : "No customer");
+                      const customerLabel = displayMeta.customerName || (t("estimates.noCustomer"));
                       const projectLabel = String(displayMeta.projectName || e?.projectName || "").trim();
                       const workTitle = String(
                         e?.workTitle
@@ -3050,7 +3136,7 @@ export default function EstimatesScreen({
                       const projectTitle = workTitle
                         || projectLabel
                         || customerLabel
-                        || (lang === "es" ? "Trabajo sin título" : "Untitled Job");
+                        || (t("estimates.untitledJob"));
 
               const pipelineValue = status === STATUS_APPROVED
                 ? toNum(invoiceSummary?.approvedTotal || e?.total)
@@ -3060,26 +3146,26 @@ export default function EstimatesScreen({
               const actionMeta = status === STATUS_APPROVED
                 ? remainingToInvoice > 0
                   ? {
-                      label: lang === "es" ? "Convertir en factura" : "Convert to Invoice",
+                      label: t("estimates.convertInvoice"),
                       tone: "rgba(74,222,128,0.9)",
                       border: "rgba(34,197,94,0.22)",
                       background: "rgba(34,197,94,0.08)",
                     }
                   : {
-                      label: lang === "es" ? "Completamente facturado" : "Fully invoiced",
+                      label: t("estimates.fullyInvoiced"),
                       tone: "rgba(96,165,250,0.9)",
                       border: "rgba(59,130,246,0.2)",
                       background: "rgba(59,130,246,0.08)",
                     }
                 : status === STATUS_LOST
                   ? {
-                      label: lang === "es" ? "Revisar oportunidad perdida" : "Review lost opportunity",
+                      label: t("estimates.reviewLostOpportunity"),
                       tone: "rgba(248,113,113,0.9)",
                       border: "rgba(239,68,68,0.22)",
                       background: "rgba(239,68,68,0.08)",
                     }
                   : {
-                      label: lang === "es" ? "Siguiente acción: seguimiento" : "Follow Up",
+                      label: t("estimates.followUp"),
                       tone: "rgba(96,165,250,0.9)",
                       border: "rgba(59,130,246,0.2)",
                       background: "rgba(59,130,246,0.08)",
@@ -3227,12 +3313,12 @@ export default function EstimatesScreen({
                   ? "pe-status-lost"
                   : "pe-status-pending";
               const statusLabel = status === STATUS_APPROVED
-                ? (lang === "es" ? "Aprobado" : "Approved")
+                ? (t("estimates.approved"))
                 : status === STATUS_LOST
-                  ? (lang === "es" ? "Perdido" : "Lost")
+                  ? (t("estimates.lost"))
                   : status === STATUS_DRAFT
-                    ? (lang === "es" ? "Borrador" : "Draft")
-                    : (lang === "es" ? "En espera de respuesta" : "Awaiting Response");
+                    ? (t("estimates.draft"))
+                    : (t("estimates.awaitingResponse"));
 
               return (
                 <div
@@ -3274,7 +3360,7 @@ export default function EstimatesScreen({
                         <div className="pe-estimate-card-customer-row" style={customerEstimateRow}>
                           {projectLabel ? (
                             <div style={{ ...cardBodyLine, fontSize: 12.5, lineHeight: 1.28, color: "rgba(226,232,240,0.76)" }}>
-                              {`${lang === "es" ? "Proyecto" : "Project"}: ${projectLabel}`}
+                              {`${t("estimates.project")}: ${projectLabel}`}
                             </div>
                           ) : null}
                           <div className="pe-estimate-card-customer" style={customerField}>
@@ -3284,7 +3370,7 @@ export default function EstimatesScreen({
                           <div className="pe-estimate-card-numbers" style={estimateField}>
                             {e?.estimateNumber ? (
                               <>
-                                <span className="pe-estimate-card-number" style={{ fontSize: 12, opacity: 0.75 }}>{`${t("estimateNumLabel")} ${e.estimateNumber}`}</span>
+                                <span className="pe-estimate-card-number" style={{ fontSize: 12, opacity: 0.75 }}>{`${t("shell.estimateNumLabel")} ${e.estimateNumber}`}</span>
                                 <button
                                   type="button"
                                   className="ep-icon-btn ep-icon-btn--sm ep-icon-btn--glass"
@@ -3299,7 +3385,7 @@ export default function EstimatesScreen({
                             ) : null}
                             {e?.invoiceNumber ? (
                               <span className="pe-estimate-card-number" style={{ fontSize: 12, opacity: 0.75, marginLeft: e?.estimateNumber ? 2 : 0 }}>
-                                {`${e?.estimateNumber ? "• " : ""}${t("invoiceNumLabel")} ${e.invoiceNumber}`}
+                                {`${e?.estimateNumber ? "• " : ""}${t("shell.invoiceNumLabel")} ${e.invoiceNumber}`}
                               </span>
                             ) : null}
                           </div>
@@ -3311,12 +3397,12 @@ export default function EstimatesScreen({
                           </span>
                           {isHighValue ? (
                             <span style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(245,158,11,0.2)", background: "rgba(245,158,11,0.08)", color: "rgba(251,191,36,0.88)", fontSize: 10.5, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                              {lang === "es" ? "Alto valor" : "High value"}
+                              {t("estimates.highValue")}
                             </span>
                           ) : null}
                           {e?.archived ? (
                             <span style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(96,165,250,0.35)", background: "rgba(59,130,246,0.12)", color: "rgba(191,219,254,0.98)", fontSize: 10.5, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                              {lang === "es" ? "Archivada" : "Archived"}
+                              {t("estimates.archived2")}
                             </span>
                           ) : null}
                         </div>
@@ -3335,7 +3421,7 @@ export default function EstimatesScreen({
                     </div>
                     <div className="pe-estimate-card-pipeline-row">
                       <div className="pe-estimate-card-pipeline-label">
-                        {lang === "es" ? "Pipeline value" : "Pipeline value"}
+                        {t("estimates.pipelineValue")}
                       </div>
                       <div className="pe-estimate-card-pipeline-value">
                         {money(pipelineValue)}
@@ -3366,18 +3452,18 @@ export default function EstimatesScreen({
                     {status === STATUS_APPROVED && invoiceSummary ? (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
                         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", opacity: 0.52 }}>
-                          {lang === "es" ? "Facturado" : "Invoiced"}
+                          {t("estimates.invoiced")}
                         </div>
                         <div style={{ fontSize: 12, fontWeight: 800, opacity: 0.82 }}>
                           {money(invoiceSummary.invoicedTotal)} / {money(invoiceSummary.approvedTotal)}
                         </div>
                         {invoiceSummary.remainingToInvoice > 0 ? (
                           <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(245,158,11,0.84)" }}>
-                            {money(invoiceSummary.remainingToInvoice)} {lang === "es" ? "restante" : "remaining"}
+                            {money(invoiceSummary.remainingToInvoice)} {t("estimates.remaining2")}
                           </div>
                         ) : (
                           <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(72,187,120,0.82)" }}>
-                            {lang === "es" ? "Completamente facturado" : "Fully invoiced"}
+                            {t("estimates.fullyInvoiced")}
                           </div>
                         )}
                       </div>
@@ -3436,7 +3522,7 @@ export default function EstimatesScreen({
                                 window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
                                 return;
                               }
-                              writeStoredProjects(nextProjects);
+                              await writeStoredProjects(nextProjects, { reason: "project_backfilled", source: "EstimatesScreen" });
                               window.dispatchEvent(new Event("estipaid:projects-changed"));
                             }
                             if (target?.projectId) onOpenProjectDetail(target.projectId);
@@ -3462,7 +3548,7 @@ export default function EstimatesScreen({
                             onClick={(evt) => runEstimateCardAction(evt, id, "approve", () => setEstimateStatus(e, STATUS_APPROVED))}
                             style={estimateSecondaryActionStyle}
                           >
-                            {lang === "es" ? "Marcar aprobado" : "Mark Approved"}
+                            {t("estimates.markApproved")}
                           </button>
                           <button
                             className="pe-btn pe-btn-ghost"
@@ -3472,7 +3558,7 @@ export default function EstimatesScreen({
                             onClick={(evt) => runEstimateCardAction(evt, id, "lost", () => setEstimateStatus(e, STATUS_LOST))}
                             style={estimateSecondaryActionStyle}
                           >
-                            {lang === "es" ? "Marcar perdido" : "Mark Lost"}
+                            {t("estimates.markLost")}
                           </button>
                         </>
                       ) : null}
@@ -3481,7 +3567,7 @@ export default function EstimatesScreen({
 
                   <div style={panel} aria-hidden={!isOpen} data-estimate-details-panel="true">
                     <div className="pe-card pe-card-content" style={subCard}>
-                      <div style={sectionTitle}>{lang === "es" ? "Estado" : "Status"}</div>
+                      <div style={sectionTitle}>{t("estimates.status")}</div>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <button
                           className={status === STATUS_APPROVED ? "pe-btn" : "pe-btn pe-btn-ghost"}
@@ -3491,7 +3577,7 @@ export default function EstimatesScreen({
                             setEstimateStatus(e, STATUS_APPROVED);
                           }}
                         >
-                          {lang === "es" ? "Marcar aprobado" : "Mark Approved"}
+                          {t("estimates.markApproved")}
                         </button>
                         <button
                           className={status === STATUS_LOST ? "pe-btn" : "pe-btn pe-btn-ghost"}
@@ -3499,7 +3585,7 @@ export default function EstimatesScreen({
                           disabled={Boolean(e?.archived)}
                           onClick={() => setEstimateStatus(e, STATUS_LOST)}
                         >
-                          {lang === "es" ? "Marcar perdido" : "Mark Lost"}
+                          {t("estimates.markLost")}
                         </button>
                         {status === STATUS_DRAFT ? (
                           <button
@@ -3508,7 +3594,7 @@ export default function EstimatesScreen({
                             disabled={Boolean(e?.archived)}
                             onClick={() => setEstimateStatus(e, STATUS_PENDING)}
                           >
-                            {lang === "es" ? "Marcar como enviada" : "Mark as Sent"}
+                            {t("estimates.markAsSent")}
                           </button>
                         ) : null}
                         {status !== STATUS_DRAFT && status !== STATUS_PENDING ? (
@@ -3518,7 +3604,7 @@ export default function EstimatesScreen({
                             disabled={Boolean(e?.archived)}
                             onClick={() => setEstimateStatus(e, STATUS_PENDING)}
                           >
-                            {lang === "es" ? "Marcar en espera de respuesta" : "Mark Awaiting Response"}
+                            {t("estimates.markAwaitingResponse")}
                           </button>
                         ) : null}
                         {status === STATUS_PENDING ? (
@@ -3528,7 +3614,7 @@ export default function EstimatesScreen({
                             disabled={Boolean(e?.archived)}
                             onClick={() => moveEstimateToDraft(e)}
                           >
-                            {lang === "es" ? "Mover a Borrador" : "Move to Draft"}
+                            {t("estimates.moveDraft")}
                           </button>
                         ) : null}
                         <button
@@ -3549,7 +3635,7 @@ export default function EstimatesScreen({
                             type="button"
                             onClick={() => approveAndConvertEstimate(e)}
                           >
-                            {lang === "es" ? "Aprobar y convertir en factura" : "Approve & Convert to Invoice"}
+                            {t("estimates.approveConvertInvoice")}
                           </button>
                         ) : null}
                         {status === STATUS_APPROVED && !e?.archived ? (
@@ -3559,7 +3645,20 @@ export default function EstimatesScreen({
                             onClick={() => openInvoiceBuilderFromEstimate(e)}
                             disabled={Number(invoiceSummary?.remainingToInvoice || 0) <= 0}
                           >
-                            {lang === "es" ? "Convertir en factura" : "Convert to Invoice"}
+                            {t("estimates.convertInvoice")}
+                          </button>
+                        ) : null}
+                        {/* Secondary: for a deposit, a progress draw, or a
+                            specific amount/percent. The primary action above
+                            stays one click. */}
+                        {status === STATUS_APPROVED && !e?.archived ? (
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            onClick={() => openInvoiceSetup(e)}
+                            disabled={Number(invoiceSummary?.remainingToInvoice || 0) <= 0}
+                          >
+                            {t("estimates.invoiceOptions")}
                           </button>
                         ) : null}
                       </div>
@@ -3567,29 +3666,31 @@ export default function EstimatesScreen({
 
                         {status === STATUS_APPROVED ? (
                       <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
-                        <div style={sectionTitle}>{lang === "es" ? "Facturación" : "Invoicing"}</div>
+                        <div style={sectionTitle}>{t("estimates.invoicing")}</div>
                         <div style={row}>
-                          <div style={small}>{lang === "es" ? "Total aprobado" : "Approved total"}</div>
+                          <div style={small}>{t("estimates.approvedTotal")}</div>
                           <div style={{ fontWeight: 900 }}>{money(invoiceSummary?.approvedTotal)}</div>
                         </div>
                         <div style={row}>
-                          <div style={small}>{lang === "es" ? "Total facturado" : "Invoiced total"}</div>
+                          <div style={small}>{t("estimates.invoicedTotal")}</div>
                           <div style={{ fontWeight: 900 }}>{money(invoiceSummary?.invoicedTotal)}</div>
                         </div>
                         <div style={row}>
-                          <div style={small}>{lang === "es" ? "Restante por facturar" : "Remaining to invoice"}</div>
+                          <div style={small}>{t("estimates.remainingInvoice")}</div>
                           <div style={{ fontWeight: 900 }}>{money(invoiceSummary?.remainingToInvoice)}</div>
                         </div>
                         <div style={row}>
-                          <div style={small}>{lang === "es" ? "Facturas vinculadas" : "Linked invoices"}</div>
+                          <div style={small}>{t("estimates.linkedInvoices")}</div>
                           <div style={{ fontWeight: 900 }}>{Number(invoiceSummary?.linkedInvoiceCount || 0)}</div>
                         </div>
                       </div>
                     ) : null}
 
+                    {status === STATUS_APPROVED && String(invoiceComposerTarget?.id || "") === id ? invoiceOptionsSetup : null}
+
                     {/* TOTALS */}
                     <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
-                      <div style={sectionTitle}>{lang === "es" ? "Totales" : "Totals"}</div>
+                      <div style={sectionTitle}>{t("estimates.totals")}</div>
                       <div style={row}>
                         <div style={small}>{labelRevenue}</div>
                         <div style={{ fontWeight: 900 }}>{money(bd.totals.revenue)}</div>
@@ -3610,17 +3711,17 @@ export default function EstimatesScreen({
 
                     {/* LABOR */}
                     <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
-                      <div style={sectionTitle}>{lang === "es" ? "Mano de obra" : "Labor"}</div>
+                      <div style={sectionTitle}>{t("estimates.labor")}</div>
                       <div style={row}>
-                        <div style={small}>{lang === "es" ? "Base" : "Base"}</div>
+                        <div style={small}>{t("estimates.base")}</div>
                         <div style={{ fontWeight: 900 }}>{money(bd.labor.base)}</div>
                       </div>
                       <div style={row}>
-                        <div style={small}>{lang === "es" ? "Multiplicador" : "Multiplier"}</div>
+                        <div style={small}>{t("estimates.multiplier")}</div>
                         <div style={{ fontWeight: 900 }}>{bd.effectiveMultiplier.toFixed(2).replace(/\.00$/, "")}×</div>
                       </div>
                       <div style={row}>
-                        <div style={small}>{lang === "es" ? "Facturado" : "Billed"}</div>
+                        <div style={small}>{t("estimates.billed")}</div>
                         <div style={{ fontWeight: 900 }}>{money(bd.labor.billed)}</div>
                       </div>
                       <div style={row}>
@@ -3655,11 +3756,11 @@ export default function EstimatesScreen({
                               <div style={{ fontWeight: 900, minWidth: 0, whiteSpace: "nowrap", flex: "0 1 auto" }}>{money(r.billed)}</div>
                             </div>
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, opacity: 0.8, minWidth: 0 }}>
-                              <div>{lang === "es" ? "Cant" : "Qty"}: {r.qty}</div>
-                              <div>{lang === "es" ? "Horas" : "Hours"}: {r.hours}</div>
-                              <div style={{ whiteSpace: "nowrap" }}>{lang === "es" ? "Tarifa" : "Rate"}: {money(r.rate)}</div>
+                              <div>{t("estimates.qty")}: {r.qty}</div>
+                              <div>{t("estimates.hours")}: {r.hours}</div>
+                              <div style={{ whiteSpace: "nowrap" }}>{t("estimates.rate")}: {money(r.rate)}</div>
                               <div style={{ whiteSpace: "nowrap" }}>
-                                {lang === "es" ? "Int" : "Internal"}: {r.internalRate != null ? money(r.internalRate) : (lang === "es" ? "—" : "—")}
+                                {t("estimates.internal")}: {r.internalRate != null ? money(r.internalRate) : (t("estimates.copy"))}
                               </div>
                               <div style={{ whiteSpace: "nowrap" }}>{labelProfit}: {money(r.profit)}</div>
                               <div style={{ whiteSpace: "nowrap" }}>{labelMargin}: {(r.margin * 100).toFixed(1)}%</div>
@@ -3671,19 +3772,19 @@ export default function EstimatesScreen({
 
                     {/* MATERIALS */}
                     <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
-                      <div style={sectionTitle}>{lang === "es" ? "Materiales" : "Materials"}</div>
+                      <div style={sectionTitle}>{t("estimates.materials")}</div>
                       <div style={row}>
-                        <div style={small}>{lang === "es" ? "Modo" : "Mode"}</div>
-                        <div style={{ fontWeight: 900 }}>{bd.materialsMode === "blanket" ? (lang === "es" ? "Global" : "Blanket") : (lang === "es" ? "Detallado" : "Itemized")}</div>
+                        <div style={small}>{t("estimates.mode")}</div>
+                        <div style={{ fontWeight: 900 }}>{bd.materialsMode === "blanket" ? (t("estimates.blanket")) : (t("estimates.itemized"))}</div>
                       </div>
                       {bd.materialsMode === "blanket" ? (
                         <div style={row}>
-                          <div style={small}>{lang === "es" ? "Markup" : "Markup"}</div>
+                          <div style={small}>{t("estimates.markup")}</div>
                           <div style={{ fontWeight: 900 }}>{pctStr(bd.materialsMarkupPct)}</div>
                         </div>
                       ) : null}
                       <div style={row}>
-                        <div style={small}>{lang === "es" ? "Facturado" : "Billed"}</div>
+                        <div style={small}>{t("estimates.billed")}</div>
                         <div style={{ fontWeight: 900 }}>{money(bd.materials.billed)}</div>
                       </div>
                       <div style={row}>
@@ -3718,10 +3819,10 @@ export default function EstimatesScreen({
                               <div style={{ fontWeight: 900, minWidth: 0, whiteSpace: "nowrap", flex: "0 1 auto" }}>{money(r.billed)}</div>
                             </div>
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, opacity: 0.8, minWidth: 0 }}>
-                              <div>{lang === "es" ? "Cant" : "Qty"}: {r.qty}</div>
-                              <div style={{ whiteSpace: "nowrap" }}>{lang === "es" ? "Precio" : "Price"}: {money(r.chargeEach)}</div>
+                              <div>{t("estimates.qty")}: {r.qty}</div>
+                              <div style={{ whiteSpace: "nowrap" }}>{t("estimates.price")}: {money(r.chargeEach)}</div>
                               <div style={{ whiteSpace: "nowrap" }}>
-                                {lang === "es" ? "Int" : "Internal"}: {r.internalEach != null ? money(r.internalEach) : (lang === "es" ? "—" : "—")}
+                                {t("estimates.internal")}: {r.internalEach != null ? money(r.internalEach) : (t("estimates.copy"))}
                               </div>
                               <div style={{ whiteSpace: "nowrap" }}>{labelProfit}: {money(r.profit)}</div>
                               <div style={{ whiteSpace: "nowrap" }}>{labelMargin}: {(r.margin * 100).toFixed(1)}%</div>
@@ -3733,27 +3834,25 @@ export default function EstimatesScreen({
 
                     {/* HAZARD / RISK */}
                     <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
-                      <div style={sectionTitle}>{lang === "es" ? "Peligro y Riesgo" : "Hazard & Risk"}</div>
+                      <div style={sectionTitle}>{t("estimates.hazardRisk")}</div>
                       <div style={row}>
-                        <div style={small}>{lang === "es" ? "Peligro %" : "Hazard %"}</div>
+                        <div style={small}>{t("estimates.hazard")}</div>
                         <div style={{ fontWeight: 900 }}>{pctStr(bd.hazardPct)}</div>
                       </div>
                       <div style={row}>
-                        <div style={small}>{lang === "es" ? "Cargo de Peligro" : "Hazard amount"}</div>
+                        <div style={small}>{t("estimates.hazardAmount")}</div>
                         <div style={{ fontWeight: 900 }}>{money(bd.hazardAmt)}</div>
                       </div>
                       <div style={row}>
-                        <div style={small}>{lang === "es" ? "Riesgo %" : "Risk %"}</div>
+                        <div style={small}>{t("estimates.risk")}</div>
                         <div style={{ fontWeight: 900 }}>{pctStr(bd.riskPct)}</div>
                       </div>
                       <div style={row}>
-                        <div style={small}>{lang === "es" ? "Cargo de Riesgo" : "Risk amount"}</div>
+                        <div style={small}>{t("estimates.riskAmount")}</div>
                         <div style={{ fontWeight: 900 }}>{money(bd.riskAmt)}</div>
                       </div>
                       <div style={{ fontSize: 12, opacity: 0.72, marginTop: 6 }}>
-                        {lang === "es"
-                          ? "Se aplica una sola vez sobre la mano de obra facturada."
-                          : "Applied once on billed labor."}
+                        {t("estimates.appliedOnceBilledLabor")}
                       </div>
                     </div>
 
@@ -3775,10 +3874,10 @@ export default function EstimatesScreen({
                         }}
                       >
                         {e?.archived
-                          ? (lang === "es" ? "Restaurar estimación" : "Restore Estimate")
+                          ? (t("estimates.restoreEstimate"))
                           : deleteMode.mode === "delete"
-                            ? (lang === "es" ? "Eliminar estimación" : "Delete Estimate")
-                            : (lang === "es" ? "Archivar estimación" : "Archive Estimate")}
+                            ? (t("estimates.deleteEstimate"))
+                            : (t("estimates.archiveEstimate"))}
                       </button>
                     </div>
                   </div>
@@ -3868,11 +3967,13 @@ export default function EstimatesScreen({
           </div>
         </div>
       ) : null}
-      {invoiceComposerTarget ? (
+      {/* Legacy Quick Composer retained as inactive source-only code while the
+          live Invoice Options workflow renders inline in its estimate card. */}
+      {false && invoiceComposerTarget ? (
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={lang === "es" ? "Crear factura" : "Create invoice"}
+          aria-label={t("estimates.createInvoice")}
           onClick={closeInvoiceComposer}
           style={invoiceComposerOverlayStyle}
         >
@@ -3885,10 +3986,10 @@ export default function EstimatesScreen({
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
               <div style={{ display: "grid", gap: 8, minWidth: 0, flex: "1 1 auto" }}>
                 <div style={invoiceComposerToneLabelStyle}>
-                  {lang === "es" ? "Compositor rápido" : "Quick Composer"}
+                  {t("estimates.quickComposer")}
                 </div>
                 <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: "0.01em", lineHeight: 1.06 }}>
-                  {lang === "es" ? "Crear factura" : "Create Invoice"}
+                  {t("estimates.createInvoice2")}
                 </div>
                 <div style={{ fontSize: 13.5, opacity: 0.86, lineHeight: 1.35 }}>{invoiceComposerEstimateLabel}</div>
                 {invoiceComposerContextItems.length ? (
@@ -3922,13 +4023,13 @@ export default function EstimatesScreen({
                 onClick={closeInvoiceComposer}
                 style={{ ...invoiceComposerFooterBtnStyle, minHeight: 36, padding: "7px 12px", flexShrink: 0 }}
               >
-                {lang === "es" ? "Cerrar" : "Close"}
+                {t("estimates.close")}
               </button>
             </div>
 
             <div style={{ display: "grid", gap: 8 }}>
               <div style={invoiceComposerSectionLabelStyle}>
-                {lang === "es" ? "Tipo de factura" : "Invoice Type"}
+                {t("estimates.invoiceType")}
               </div>
               <div style={invoiceComposerSegmentWrapStyle}>
                 {invoiceComposerTypeOptions.map((option) => (
@@ -3953,7 +4054,7 @@ export default function EstimatesScreen({
             <div style={invoiceComposerFieldGridStyle}>
               <div style={invoiceComposerFieldBlockStyle}>
                 <div style={invoiceComposerSectionLabelStyle}>
-                  {lang === "es" ? "Monto de factura" : "Invoice Amount"}
+                  {t("estimates.invoiceAmount")}
                 </div>
                 <div style={invoiceComposerAmountRowStyle}>
                   <input
@@ -3963,7 +4064,7 @@ export default function EstimatesScreen({
                     value={invoiceComposerForm.amountValue}
                     placeholder={
                       invoiceComposerForm.invoiceType === INVOICE_TYPES.FINAL
-                        ? (lang === "es" ? "Dejar vacío para usar el saldo restante" : "Leave blank to use remaining balance")
+                        ? (t("estimates.leaveBlankUseRemainingBalance"))
                         : (invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT ? "25" : "2500")
                     }
                     onChange={(evt) => {
@@ -4036,26 +4137,18 @@ export default function EstimatesScreen({
 
                 <div style={{ fontSize: 12.5, opacity: 0.72, lineHeight: 1.4 }}>
                   {invoiceComposerForm.invoiceType === INVOICE_TYPES.FINAL
-                    ? (lang === "es"
-                      ? "Final usa el saldo restante por defecto si dejas el monto vacío."
-                      : "Final defaults to the remaining balance if you leave the amount blank.")
+                    ? (t("estimates.finalDefaultsRemainingBalanceIfLeave"))
                     : invoiceComposerForm.invoiceType === INVOICE_TYPES.PROGRESS
-                      ? (lang === "es"
-                        ? "Progreso sugiere una parte del saldo restante; puedes ajustarlo."
-                        : "Progress suggests part of the remaining balance; you can override it.")
+                      ? (t("estimates.progressSuggestsPartRemainingBalanceCan"))
                       : invoiceComposerForm.invoiceType === INVOICE_TYPES.DEPOSIT
-                        ? (lang === "es"
-                          ? "Depósito ofrece atajos rápidos de porcentaje; puedes ajustarlo."
-                          : "Deposit includes quick percent presets; you can override them.")
-                        : (lang === "es"
-                          ? "Ingresa un monto o porcentaje personalizado."
-                          : "Enter a custom amount or percentage.")}
+                        ? (t("estimates.depositIncludesQuickPercentPresetsCan"))
+                        : (t("estimates.enterCustomAmountPercentage"))}
                 </div>
               </div>
 
               <div style={invoiceComposerFieldBlockStyle}>
                 <div style={invoiceComposerSectionLabelStyle}>
-                  {lang === "es" ? "Fecha de vencimiento" : "Due Date"}
+                  {t("estimates.dueDate")}
                 </div>
                 <input
                   type="date"
@@ -4076,14 +4169,14 @@ export default function EstimatesScreen({
               style={invoiceComposerMoreBtnStyle}
             >
               {invoiceComposerShowMore
-                ? (lang === "es" ? "Ocultar más" : "Hide More")
-                : (lang === "es" ? "Más" : "More")}
+                ? (t("estimates.hideMore"))
+                : (t("estimates.more"))}
             </button>
 
             {invoiceComposerShowMore ? (
               <div style={invoiceComposerFieldBlockStyle}>
                 <div style={invoiceComposerSectionLabelStyle}>
-                  {lang === "es" ? "Nota" : "Note"}
+                  {t("estimates.note")}
                 </div>
                 <textarea
                   className="pe-input pe-textarea"
@@ -4093,7 +4186,7 @@ export default function EstimatesScreen({
                     setInvoiceComposerError("");
                   }}
                   rows={3}
-                  placeholder={lang === "es" ? "Nota opcional para esta factura" : "Optional note for this invoice"}
+                  placeholder={t("estimates.optionalNoteInvoice")}
                   style={{ minHeight: 88, resize: "vertical" }}
                 />
               </div>
@@ -4101,7 +4194,7 @@ export default function EstimatesScreen({
 
             <div style={invoiceComposerSummaryCardStyle}>
               <div style={invoiceComposerSectionLabelStyle}>
-                {lang === "es" ? "Resumen de facturación" : "Billing Summary"}
+                {t("estimates.billingSummary")}
               </div>
               <div style={invoiceComposerSummaryGridStyle}>
                 {invoiceComposerSummaryItems.map((item) => (
@@ -4142,10 +4235,10 @@ export default function EstimatesScreen({
 
             <div style={invoiceComposerFooterStyle}>
               <button type="button" className="pe-btn pe-btn-ghost" onClick={closeInvoiceComposer} style={invoiceComposerFooterBtnStyle}>
-                {lang === "es" ? "Cancelar" : "Cancel"}
+                {t("estimates.cancel")}
               </button>
-              <button type="button" className="pe-btn" onClick={submitInvoiceComposer} style={invoiceComposerPrimaryBtnStyle}>
-                {lang === "es" ? "Crear borrador" : "Create Draft Invoice"}
+              <button type="button" className="pe-btn" onClick={submitInvoiceSetup} style={invoiceComposerPrimaryBtnStyle}>
+                {t("estimates.createDraftInvoice")}
               </button>
             </div>
             </div>

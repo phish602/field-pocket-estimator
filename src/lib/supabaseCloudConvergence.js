@@ -2,17 +2,33 @@
 /* eslint-disable */
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
-import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
+import { AUDIT_STORE_SCHEMA_VERSION } from "../utils/auditStore";
+import { normalizeAuditEvent } from "../utils/auditLog";
+import { sanitizePhoneDigits } from "../utils/sanitize";
+import { buildLocalSnapshotFromStorage, scanLocalDataIntegrity } from "./localDataIntegrity";
 import { readCloudAssetBindings, setCloudAssetBindingsBatch } from "./cloudAssetBindings";
-import { readCloudSyncBaseline, cloudSyncEqual, captureVerifiedCloudSyncBaseline, stableCloudSyncHash, compactStoredCloudSyncBaseline } from "./cloudSyncBaseline";
+import { readCloudSyncBaseline, cloudSyncEqual, normalizeCloudSyncValue, captureVerifiedCloudSyncBaseline, stableCloudSyncHash, compactStoredCloudSyncBaseline } from "./cloudSyncBaseline";
 import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
-import { readCloudBackupQueueState, readPersistedCloudBackupQueueState, markCloudBackupDirty, clearCloudBackupDirty, CLOUD_BACKUP_STATUS, LEGACY_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION, migrateLegacyPersistedCloudBackupQueue, recoverVerifiedActiveDeviceTakeoverPause } from "./cloudBackupQueue";
-import { ensureCurrentDeviceCanApplyLocalRestore, getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
+import { readCloudBackupQueueState, readPersistedCloudBackupQueueState, clearCloudBackupDirty, CLOUD_BACKUP_STATUS, LEGACY_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION, migrateLegacyPersistedCloudBackupQueue, recoverVerifiedActiveDeviceTakeoverPause } from "./cloudBackupQueue";
+import { ensureCurrentDeviceCanApplyLocalRestore, getOrCreateLocalDeviceId, operationFenceStillCurrent } from "./supabaseDeviceLock";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
-import { mapLocalEstimateToBackendEstimate, mapLocalInvoiceToBackendInvoice } from "../utils/backendDataMapper";
+import { mapLocalEstimateToBackendEstimate, mapLocalInvoiceToBackendInvoice, mapLocalInvoicePaymentToBackendPayment } from "../utils/backendDataMapper";
 import { buildParentLineItemContract } from "./cloudLineItemContract";
 import { buildPersistedEstimateContract, PERSISTED_ESTIMATE_CONTRACT_FIELDS } from "./supabaseEstimatePersistenceContract";
 import { ESTIMATE_RESTORE_PAYLOAD_SCHEMA, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
+import { buildImmutableAppRestoreBundleMutation } from "./businessCloudMutationOwners";
+import { appendCloudMutationsDurably, CLOUD_MUTATION_ENTITY, CLOUD_MUTATION_OPERATION } from "./cloudMutationLedger";
+import { getHistoricalWorkspaceBaselineCandidates, buildWorkspaceBaselineRetiredLedger, normalizeCloudMutationLedger } from "./cloudMutationLedger";
+import { isInactiveWorkspaceBaselineQueue, buildWorkspaceBaselineRetiredQueue, isLegacyCompatibilityQueue } from "./cloudBackupQueue";
+import { isActiveCloudMutation, CLOUD_OPERATION_OWNER, CORE_BUSINESS_FAMILIES } from "./cloudOperationOwnership";
+import { readCloudOperationRunLock } from "./cloudOperationRunLock";
+import { getActiveAccountScopedStorage, getActiveAccountWorkspaceIdentity, isAuthoritativeVaultRuntimeInstalled } from "./accountScopedLocalStorage";
+import { getVaultRuntimeStatus, isVaultRuntimeReady, isVaultRuntimeReadable, runtimeGetItem, runtimeCommitAtomicRecords } from "./vaultRuntimeStore";
+import { deriveWorkspaceVaultTag } from "./vaultSession";
+import { getBrowserSurfaceClaimToken, isBrowserSurfaceActive } from "./browserSurfaceAuthority";
+import { withVaultDeviceRecoveryLease } from "./vaultDeviceRecoveryLease";
+import { readVaultDeviceRecoveryCheckpoint } from "./vaultDeviceRecoveryCheckpoint";
+import { SUPABASE_CLOUD_VERIFICATION_VERSION } from "./supabaseCloudVerification";
 
 export const CLOUD_CONVERGENCE_VERSION = 1;
 const JOURNAL_KEY = STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL;
@@ -30,6 +46,47 @@ const asText = (value) => String(value == null ? "" : value).trim();
 const asArray = (value) => Array.isArray(value) ? value : [];
 const now = () => new Date().toISOString();
 function readRaw(storage, key) { try { return storage?.getItem?.(key) ?? null; } catch { return null; } }
+
+// READ-ONLY accessor for the conflict evidence this module already persisted.
+//
+// recordConflicts() writes record-level evidence into the encrypted conflict
+// vault whenever a plan is unsafe, but VAULT_KEY was reachable only through the
+// module-private readRaw above -- so nothing outside this file could inspect it.
+// During a conflict the business shell is deliberately unmounted, which left the
+// evidence with no legitimate viewer at all.
+//
+// This performs exactly one getItem through the caller's storage facade. It
+// never writes, migrates, de-duplicates, reorders or repairs anything, and it
+// never starts a convergence transaction. The stored shape is returned as-is
+// (defensively cloned) so no second diagnostic schema is introduced.
+export function readCloudSyncConflictVault(storage = localStorage) {
+  const raw = readRaw(storage, VAULT_KEY);
+  if (!raw) return { ok: true, present: false, version: 0, companyId: "", entries: [], error: "" };
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, present: true, version: 0, companyId: "", entries: [], error: "conflict_vault_unreadable" };
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return { ok: false, present: true, version: 0, companyId: "", entries: [], error: "conflict_vault_unreadable" };
+  }
+  let entries;
+  try {
+    // Defensive clone: a viewer must never be able to mutate stored evidence.
+    entries = JSON.parse(JSON.stringify(asArray(parsed.entries)));
+  } catch {
+    return { ok: false, present: true, version: 0, companyId: "", entries: [], error: "conflict_vault_unreadable" };
+  }
+  return {
+    ok: true,
+    present: true,
+    version: Number(parsed.version) || 0,
+    companyId: asText(parsed.companyId),
+    entries,
+    error: "",
+  };
+}
 function writeRaw(storage, key, value) { try { storage.setItem(key, value); return readRaw(storage, key) === value; } catch { return false; } }
 function entityId(entity) { return asText(entity?.id); }
 export function normalizeCustomerContract(customer = {}) {
@@ -57,14 +114,76 @@ export function normalizeEstimateContract(estimate = {}) {
     document: { ...clone(estimate), id: "" },
   };
 }
+// The invoice columns the EXISTING writer actually persists (see
+// mapInvoicePayloads in supabaseMigrationWriter). Everything the mapper also
+// produces for display -- customer_name, project_name, project_number,
+// work_title, timeline fields -- is dropped by the writer, so cloud can never
+// return it and it must not participate in equality.
+const PERSISTED_INVOICE_HEADER_FIELDS = Object.freeze([
+  "legacy_local_id", "project_legacy_local_id", "customer_legacy_local_id", "source_estimate_legacy_local_id",
+  "invoice_number", "estimate_number", "doc_type", "status", "payment_status",
+  "invoice_date", "due_date", "total", "amount_paid", "balance_remaining", "notes", "terms",
+]);
+
+// The invoice_payments columns the writer persists: see the projection list in
+// supabaseMigrationWriter ("legacy_local_id, invoice_id, amount, method, status,
+// paid_at"). The local runtime payment additionally carries empty processor
+// scaffolding (stripe*, cardBrand, receiptUrl, note, order, currency) that is
+// never written, so it cannot be evidence of divergence.
+const PERSISTED_PAYMENT_FIELDS = Object.freeze(["legacy_local_id", "amount", "method", "status", "paid_at"]);
+
+function pickPersistedFields(source, fields) {
+  const picked = {};
+  fields.forEach((field) => {
+    const value = source?.[field];
+    // The mappers already delete "" and null, so an absent key means "not
+    // persisted" on both sides and stays absent rather than becoming a value.
+    if (value !== undefined) picked[field] = value;
+  });
+  return picked;
+}
+
+// THE INVOICE COMPARISON CONTRACT.
+//
+// This used to be `document: { ...clone(invoice), id: "" }` -- the entire local
+// runtime object. A cloud-restored invoice is reconstructed from persisted
+// columns only, so it can never carry the local computed/display containers
+// (financials, totals, margins, customer, job, materials, labor,
+// sourceEstimateSnapshot, ui, docType, invoiceType, local timestamps). Comparing
+// them made two invoices with identical business state diverge on every field
+// the cloud is not even allowed to store.
+//
+// The replacement is still ONE atomic financial document -- relationship
+// identity, the persisted header, the canonical child rows and the persisted
+// payments. Nothing here is independently mergeable; it is simply the invoice
+// EstiPaid can actually write and read back.
 export function normalizeInvoiceContract(invoice = {}) {
+  const mapped = mapLocalInvoiceToBackendInvoice(invoice, {});
+  const parentLegacyId = asText(mapped.legacy_local_id) || entityId(invoice);
+  const payments = asArray(invoice?.payments)
+    .map((payment) => pickPersistedFields(
+      mapLocalInvoicePaymentToBackendPayment(payment, invoice, {}),
+      PERSISTED_PAYMENT_FIELDS
+    ))
+    // The cloud payment table has no `order` column, so runtime array position
+    // is not business state. Ordering by persisted identity keeps comparison
+    // deterministic WITHOUT collapsing duplicates: a repeated legacy_local_id
+    // still yields two rows here, and the existing duplicate-identity checks
+    // continue to fail closed on it.
+    .sort((left, right) => asText(left.legacy_local_id).localeCompare(asText(right.legacy_local_id)));
+
   return {
     id: entityId(invoice), customerId: asText(invoice.customerId || invoice.customer?.id), projectId: asText(invoice.projectId || invoice.project?.id),
     sourceEstimateId: asText(invoice.sourceEstimateId || invoice.sourceEstimateLegacyId || invoice.sourceEstimateSnapshot?.estimateId),
-    persisted: mapLocalInvoiceToBackendInvoice(invoice, {}),
-    // The complete local invoice is retained in the comparison contract so
-    // line items and payments can never be independently merged or patched.
-    document: { ...clone(invoice), id: "" },
+    persisted: pickPersistedFields(mapped, PERSISTED_INVOICE_HEADER_FIELDS),
+    // The SAME canonical child contract the writer and verifier use, so
+    // line-item economics stay strict and identity stays deterministic.
+    lineItems: buildParentLineItemContract({
+      entityType: "invoice",
+      parentLegacyId,
+      items: mapped.line_items,
+    }).rows,
+    payments,
   };
 }
 function normalizeFamilyEntity(family, value) {
@@ -106,10 +225,11 @@ function snapshotValues(storage) {
 // profile, settings, scope templates, customers, the conflict vault) are only
 // listed when this plan actually writes them, which for an ordinary cloud
 // import it does not.
-export function buildConvergenceRollbackKeySet({ writes = {}, bindingEntries = [], willCaptureBaseline = false, willClearQueue = false, metadataRecovery = false } = {}) {
+export function buildConvergenceRollbackKeySet({ writes = {}, bindingEntries = [], willCaptureBaseline = false, willClearQueue = false, willAppendLedger = false, metadataRecovery = false } = {}) {
   const keys = new Set(Object.keys(writes || {}));
   if (asArray(bindingEntries).length) keys.add(STORAGE_KEYS.CLOUD_ASSET_BINDINGS);
   if (willCaptureBaseline) keys.add(STORAGE_KEYS.CLOUD_SYNC_BASELINE);
+  if (willAppendLedger) keys.add(STORAGE_KEYS.CLOUD_MUTATION_LEDGER);
   // A verified completion clears the queue, and clearCloudBackupDirty also
   // clears the pause; a legacy migration rewrote both. Either way both keys are
   // in play and must be restorable.
@@ -185,6 +305,64 @@ function inferConvergenceStage(result) {
   return "";
 }
 
+// Bundle-proof evidence is limited to fixed enums/booleans, safe counts and
+// the explicitly approved non-sensitive profile schema keys.
+// Never forward cloud errors, values, identities or diff payloads. Only the
+// explicit non-sensitive profile schema keys below may be named.
+const PORTABLE_DIFFERENCE_FLAGS = ["localOnlyFields", "cloudOnlyFields", "differentValues", "orderingDifference", "localOnlyRecords", "cloudOnlyRecords", "serializationOnly", "phoneFormattingEquivalent", "collectionOrderEquivalent", "unsupportedShape", "identityIssue"];
+// A strict allowlist also withholds unknown/user-created keys: a denylist alone
+// could expose a secret or a business value used as an object property name.
+// Tax/account identifiers and all credentials/encryption keys are excluded.
+export const HISTORICAL_PROFILE_DIAGNOSTIC_FIELD_KEYS = Object.freeze([
+  "companyName", "phone", "email", "address", "addressLine1", "addressLine2", "city", "state", "zip",
+  "logoDataUrl", "attn", "website", "terms", "businessName", "legalName", "displayName", "name",
+  "fullName", "ownerName", "contactName", "firstName", "lastName",
+]);
+function safeProfileDifferenceKeys(detail) {
+  const fields = ["localOnlyFieldKeys", "cloudOnlyFieldKeys", "differingFieldKeys"];
+  if (!fields.some(key => Array.isArray(detail?.[key]))) return {};
+  const withheld = new Set(fields.flatMap(key => asArray(detail?.[key]))
+    .filter(key => typeof key === "string" && !HISTORICAL_PROFILE_DIAGNOSTIC_FIELD_KEYS.includes(key)));
+  const prior = Number.isSafeInteger(detail?.redactedFieldKeyCount) && detail.redactedFieldKeyCount >= 0 ? detail.redactedFieldKeyCount : 0;
+  return { ...Object.fromEntries(fields.map(key => [key, [...new Set(asArray(detail?.[key])
+    .filter(field => HISTORICAL_PROFILE_DIAGNOSTIC_FIELD_KEYS.includes(field)))].sort()])), redactedFieldKeyCount: prior + withheld.size };
+}
+function safePortableDifference(detail, profile = false) {
+  const classifications = ["matched", "serialization_equivalent", "phone_format_equivalent", "collection_order_equivalent", "local_only_fields", "cloud_only_fields", "value_difference", "ordering_difference", "local_only_records", "cloud_only_records", "mixed_difference", "capture_difference", "unsupported_shape"];
+  return {
+    classification: classifications.includes(detail?.classification) ? detail.classification : "unavailable",
+    ...Object.fromEntries(PORTABLE_DIFFERENCE_FLAGS.map(key => [key, typeof detail?.[key] === "boolean" ? detail[key] : null])),
+    ...(profile ? safeProfileDifferenceKeys(detail) : {}),
+  };
+}
+
+function safeTemplateCaptureProof(proof) {
+  const select = (value, allowed) => allowed.includes(value) ? value : "unavailable";
+  return {
+    localStatus: select(proof?.localStatus, ["missing_source_storage", "malformed_stored_data", "unsupported_storage_shape", "unsupported_template_records", "read_unavailable", "captured_empty", "captured_records"]),
+    cloudStatus: select(proof?.cloudStatus, ["snapshot_unavailable", "bundle_missing", "bundle_invalid", "bundle_read_unavailable", "bundle_selection_error", "bundle_read_or_selection_error", "uncaptured_null", "captured_empty", "captured_records", "unsupported_storage_shape", "unsupported_template_records"]),
+    historicalNullReason: select(proof?.historicalNullReason, ["not_recorded_in_bundle", "not_applicable"]),
+  };
+}
+
+function safeHistoricalBundleProof(proof) {
+  const select = (value, allowed) => allowed.includes(value) ? value : "unavailable";
+  const match = value => typeof value === "boolean" ? value : null;
+  return {
+    code: select(proof?.code, ["matched", "cloud_snapshot_unavailable", "app_restore_bundle_missing", "app_restore_bundle_invalid", "app_restore_bundle_error", "app_restore_bundle_unavailable", "company_profile_mismatch", "settings_mismatch", "scope_templates_mismatch"]),
+    family: select(proof?.family, ["none", "company_profile", "settings", "scope_templates"]),
+    snapshotAvailable: match(proof?.snapshotAvailable),
+    supplementalStatus: select(proof?.supplementalStatus, ["available", "missing", "invalid", "error"]),
+    companyProfileMatched: match(proof?.companyProfileMatched), settingsMatched: match(proof?.settingsMatched),
+    scopeTemplatesMatched: match(proof?.scopeTemplatesMatched),
+    localShape: select(proof?.localShape, ["object", "array", "null", "missing", "scalar"]),
+    cloudShape: select(proof?.cloudShape, ["object", "array", "null", "missing", "scalar"]),
+    ...(proof?.companyProfileDifference ? { companyProfileDifference: safePortableDifference(proof.companyProfileDifference, true) } : {}),
+    ...(proof?.scopeTemplatesDifference ? { scopeTemplatesDifference: safePortableDifference(proof.scopeTemplatesDifference) } : {}),
+    ...(proof?.scopeTemplateCapture ? { scopeTemplateCapture: safeTemplateCaptureProof(proof.scopeTemplateCapture) } : {}),
+  };
+}
+
 export function buildSafeConvergenceResult(result) {
   const changed = result?.changedFamilies || {};
   return {
@@ -217,6 +395,7 @@ export function buildSafeConvergenceResult(result) {
     pauseReason: asText(result?.pauseReason),
     pauseRecovered: Boolean(result?.pauseRecovered),
     blockerCount: Number(result?.mismatch?.blockerCount || 0),
+    ...(result?.historicalBundleProof ? { historicalBundleProof: safeHistoricalBundleProof(result.historicalBundleProof) } : {}),
   };
 }
 
@@ -611,6 +790,21 @@ function planSupplemental(local, cloud, baseline, plan) {
   operationForFamily("scopeTemplates", localTemplates, cloudTemplates, baseTemplates, plan, null, plan.bootstrap);
 }
 
+function invoicesWithMatchedLegacyEstimateNumbers(snapshot = {}, cloudInvoices = []) {
+  const estimatesById = new Map(asArray(snapshot.estimates).map((estimate) => [entityId(estimate), estimate]));
+  const cloudById = new Map(asArray(cloudInvoices).map((invoice) => [entityId(invoice), invoice]));
+  const invoices = asArray(snapshot.invoices).map((invoice) => {
+    if (asText(invoice?.estimateNumber)) return invoice;
+    const cloudInvoice = cloudById.get(entityId(invoice));
+    const cloudEstimateNumber = asText(cloudInvoice?.estimateNumber);
+    if (!cloudEstimateNumber) return invoice;
+    const linkedEstimate = estimatesById.get(asText(invoice?.sourceEstimateId || invoice?.sourceEstimateLegacyId));
+    const estimateNumber = linkedEstimate ? asText(buildPersistedEstimateContract(mapLocalEstimateToBackendEstimate(linkedEstimate, {})).estimate_number) : "";
+    return estimateNumber === cloudEstimateNumber ? { ...invoice, estimateNumber } : invoice;
+  });
+  return { ...snapshot, invoices };
+}
+
 export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = null, cloudSnapshot = null, companyId = "", storage } = {}) {
   const plan = {
     version: CLOUD_CONVERGENCE_VERSION, safe: false, classifications: [], conflicts: [], additions: { customers: [], projects: [], estimates: [], invoices: [], scopeTemplates: [] },
@@ -645,15 +839,17 @@ export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = n
     ...(localProjectIdByCloudId.has(asText(invoice?.projectId)) ? { projectId: localProjectIdByCloudId.get(asText(invoice.projectId)) } : {}),
     ...(localEstimateIdByCloudId.has(asText(invoice?.sourceEstimateId)) ? { sourceEstimateId: localEstimateIdByCloudId.get(asText(invoice.sourceEstimateId)) } : {}),
   }));
-  const invoiceBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "invoices", local: asArray(local.invoices), cloud: cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
-  const paymentBindings = cloudSnapshot?.uuidMaps ? paymentBindingResolution({ localInvoices: asArray(local.invoices), cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
+  const localForInvoiceComparison = invoicesWithMatchedLegacyEstimateNumbers(local, cloudInvoices);
+  const baselineForInvoiceComparison = baseline ? invoicesWithMatchedLegacyEstimateNumbers(baseline, cloudInvoices) : null;
+  const invoiceBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "invoices", local: asArray(localForInvoiceComparison.invoices), cloud: cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
+  const paymentBindings = cloudSnapshot?.uuidMaps ? paymentBindingResolution({ localInvoices: asArray(localForInvoiceComparison.invoices), cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
   const bindingCodes = [...(customerBindings?.codes || []), ...(projectBindings?.codes || []), ...(estimateBindings?.codes || []), ...(invoiceBindings?.codes || []), ...(paymentBindings?.codes || [])];
   if (bindingCodes.length) { plan.conflicts.push(...bindingCodes.map((code) => ({ family: "bindings", code: plan.bootstrap ? "baseline_bootstrap_binding_conflict" : code }))); return plan; }
   if (customerBindings || projectBindings || estimateBindings || invoiceBindings || paymentBindings) plan.bindingEntries.push(...(customerBindings?.entries || []), ...(projectBindings?.entries || []), ...(estimateBindings?.entries || []), ...(invoiceBindings?.entries || []), ...(paymentBindings?.entries || []));
   operationForFamily("customers", asArray(local.customers), asArray(cloud.customers), asArray(baseline?.customers), plan, customerBindings?.pairs, plan.bootstrap);
   operationForFamily("projects", asArray(local.projects), cloudProjects, asArray(baseline?.projects), plan, projectBindings?.pairs, plan.bootstrap);
   operationForFamily("estimates", asArray(local.estimates), cloudEstimates, asArray(baseline?.estimates), plan, estimateBindings?.pairs, plan.bootstrap);
-  operationForFamily("invoices", asArray(local.invoices), cloudInvoices, asArray(baseline?.invoices), plan, invoiceBindings?.pairs, plan.bootstrap);
+  operationForFamily("invoices", asArray(localForInvoiceComparison.invoices), cloudInvoices, asArray(baselineForInvoiceComparison?.invoices), plan, invoiceBindings?.pairs, plan.bootstrap);
   // Additions and replacements must always prove restore-payload + child evidence.
   [...(plan.additions.estimates || []), ...(plan.replacements.estimates || [])].forEach((estimate) => {
     const code = estimateEvidenceCode(estimate, cloudSnapshot?.estimateEvidence?.[entityId(estimate)]);
@@ -723,6 +919,45 @@ function plannedStorageWrites(local, plan) {
   return writes;
 }
 
+function buildConvergenceLocalOnlyMutations({ plan, snapshot, companyId }) {
+  const entityByFamily = {
+    customers: CLOUD_MUTATION_ENTITY.CUSTOMER,
+    projects: CLOUD_MUTATION_ENTITY.PROJECT,
+    estimates: CLOUD_MUTATION_ENTITY.ESTIMATE,
+    invoices: CLOUD_MUTATION_ENTITY.INVOICE,
+  };
+  const mutations = [];
+  let appBundleChanged = false;
+  asArray(plan?.classifications).forEach((entry) => {
+    if (!["local_only_addition", "local_changed"].includes(entry?.classification)) return;
+    if (["companyProfile", "settings", "scopeTemplates"].includes(entry?.family)) {
+      appBundleChanged = true;
+      return;
+    }
+    const entityType = entityByFamily[entry?.family];
+    if (!entityType) return;
+    const record = asArray(snapshot?.[entry.family]).find((candidate) => entityId(candidate) === asText(entry?.id));
+    if (!record) return;
+    mutations.push({
+      companyId,
+      entityType,
+      documentId: asText(entry.id),
+      operation: CLOUD_MUTATION_OPERATION.UPSERT,
+      reason: "cloud_convergence_local_change",
+      source: "runSupabaseCloudConvergence",
+      payload: clone(record),
+    });
+  });
+  if (appBundleChanged) {
+    mutations.push(buildImmutableAppRestoreBundleMutation({
+      companyId,
+      reason: "cloud_convergence_local_app_bundle_change",
+      source: "runSupabaseCloudConvergence",
+    }));
+  }
+  return mutations;
+}
+
 function verifyLocalApply({ before, writes, storage, localBefore, plan, expectedQueueRevision }) {
   if (Number(queueRevision(storage)) !== Number(expectedQueueRevision)) return { ok: false, code: "queue_revision_changed" };
   if (!Object.entries(writes).every(([key, value]) => readRaw(storage, key) === value)) return { ok: false, code: "local_write_mismatch" };
@@ -745,9 +980,82 @@ function verifyLocalApply({ before, writes, storage, localBefore, plan, expected
 
 function readJournal(storage) { try { const raw = readRaw(storage, JOURNAL_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; } }
 function writeJournal(storage, journal) { const value = JSON.stringify(journal); return writeRaw(storage, JOURNAL_KEY, value); }
-export function recoverInterruptedCloudConvergence({ storage = localStorage } = {}) {
+function journalRecoveryMismatchCode({ journal, storage, companyId, userId, deviceId }) {
+  if (!asText(companyId) || !asText(userId) || !asText(deviceId)) return "journal_recovery_context_missing";
+  if (!asText(journal?.companyId) || !asText(journal?.userId) || !asText(journal?.deviceId)) return "journal_identity_missing";
+  if (asText(journal.companyId) !== asText(companyId)) return "journal_company_mismatch";
+  if (asText(journal.userId) !== asText(userId)) return "journal_user_mismatch";
+  if (asText(journal.deviceId) !== asText(deviceId)) return "journal_device_mismatch";
+  if (!Number.isFinite(Number(journal?.queueRevision)) || queueRevision(storage) !== Number(journal.queueRevision)) return "journal_revision_mismatch";
+  return "";
+}
+
+const RETIRABLE_JOURNAL_MISMATCH_CODES = new Set([
+  "journal_company_mismatch",
+  "journal_user_mismatch",
+  "journal_device_mismatch",
+  "journal_revision_mismatch",
+]);
+
+function retireInapplicableJournal({ storage, journal, companyId, userId, deviceId, code }) {
+  // A conclusively stale journal cannot authorize rollback, but its complete
+  // contents remain valuable recovery evidence. Archive it in the existing
+  // conflict vault before releasing the active transaction slot.
+  try {
+    const current = JSON.parse(readRaw(storage, VAULT_KEY) || "{\"version\":1,\"companyId\":\"\",\"entries\":[]}");
+    if (!current || typeof current !== "object" || Array.isArray(current)) return false;
+    if (current.companyId && asText(current.companyId) !== asText(companyId)) return false;
+    const key = stableCloudSyncHash({ journal, code });
+    const retiredJournals = asArray(current.retiredJournals);
+    if (!retiredJournals.some((candidate) => candidate?.key === key)) {
+      retiredJournals.push({
+        key,
+        classificationCode: code,
+        detectedAt: now(),
+        journalVersion: journal?.version ?? null,
+        attemptId: asText(journal?.attemptId),
+        journalCompanyId: asText(journal?.companyId),
+        journalUserId: asText(journal?.userId),
+        journalDeviceId: asText(journal?.deviceId),
+        journalQueueRevision: Number(journal?.queueRevision),
+        currentCompanyId: asText(companyId),
+        currentUserId: asText(userId),
+        currentDeviceId: asText(deviceId),
+        currentQueueRevision: queueRevision(storage),
+        journal,
+      });
+    }
+    const nextVault = {
+      ...current,
+      version: CLOUD_CONVERGENCE_VERSION,
+      companyId: asText(companyId),
+      entries: asArray(current.entries),
+      retiredJournals,
+    };
+    if (!writeRaw(storage, VAULT_KEY, JSON.stringify(nextVault))) return false;
+    const persistedVault = JSON.parse(readRaw(storage, VAULT_KEY) || "{}");
+    if (!asArray(persistedVault?.retiredJournals).some((candidate) => candidate?.key === key && candidate?.journal && candidate?.classificationCode === code)) return false;
+    storage.removeItem(JOURNAL_KEY);
+    return readRaw(storage, JOURNAL_KEY) === null;
+  } catch {
+    return false;
+  }
+}
+
+export function recoverInterruptedCloudConvergence({ storage = localStorage, companyId = "", userId = "", deviceId = "" } = {}) {
   const journal = readJournal(storage);
   if (!journal) return { ok: true, recovered: false };
+  const mismatchCode = journalRecoveryMismatchCode({ journal, storage, companyId, userId, deviceId });
+  // Only an identity or queue-revision mismatch proves this record cannot be
+  // the current rollback transaction. Ambiguous/malformed journals remain
+  // active and blocking rather than being guessed away.
+  if (mismatchCode) {
+    if (!RETIRABLE_JOURNAL_MISMATCH_CODES.has(mismatchCode)) return { ok: false, recovered: false, code: mismatchCode };
+    const retired = retireInapplicableJournal({ storage, journal, companyId, userId, deviceId, code: mismatchCode });
+    return retired
+      ? { ok: true, recovered: false, retired: true, code: mismatchCode }
+      : { ok: false, recovered: false, code: "journal_retirement_failed" };
+  }
   try {
     Object.entries(journal.previous || {}).forEach(([key, value]) => { if (value === null) storage.removeItem(key); else storage.setItem(key, value); });
     const valid = Object.entries(journal.previous || {}).every(([key, value]) => readRaw(storage, key) === value);
@@ -788,7 +1096,14 @@ function recordConflicts({ storage, companyId, plan, baseline, local, cloud, clo
       const entry = conflictVaultEntry({ companyId, conflict, baseline, local, cloud, cloudSnapshot, attemptId });
       if (!entries.some((candidate) => candidate.key === entry.key)) entries.push(entry);
     });
-    return writeRaw(storage, VAULT_KEY, JSON.stringify({ version: CLOUD_CONVERGENCE_VERSION, companyId, entries }));
+    // Conflict recording is additive: preserve existing recovery evidence and
+    // any future vault metadata while replacing only the de-duplicated entries.
+    return writeRaw(storage, VAULT_KEY, JSON.stringify({
+      ...current,
+      version: CLOUD_CONVERGENCE_VERSION,
+      companyId,
+      entries,
+    }));
   } catch { return false; }
 }
 
@@ -836,6 +1151,9 @@ async function recoverCloudSyncMetadata({ storage, configured, user, company, co
 
 export async function runSupabaseCloudConvergence(options = {}) {
   const storage = options.storage || localStorage;
+  if (options.reconcileHistoricalResidueOnly === true) {
+    return runVerifiedHistoricalWorkspaceRemediation({ ...options, storage });
+  }
   // Metadata recovery participates in the convergence attempt's rollback: any
   // outcome short of verified success puts the queue and pause back byte-for-
   // byte, so a device is never left half-migrated or prematurely resumed.
@@ -845,10 +1163,376 @@ export async function runSupabaseCloudConvergence(options = {}) {
   return result;
 }
 
+// The audit writer persists a versioned envelope; legacy device import also
+// stores bare arrays. The general export artifact only recognizes arrays. Give
+// its existing parser/verifier a read-only array view for this ONE known format.
+// Do not call readStoredAuditEvents/trimAuditEvents: those filter, dedupe, sort
+// and enforce retention, which would lose evidence needed for this proof.
+function historicalAuditStorageSnapshot(storage) {
+  const raw = storage.getItem(STORAGE_KEYS.AUDIT_EVENTS);
+  if (raw == null) return storage;
+  let value;
+  try { value = JSON.parse(raw); } catch { return storage; } // Existing artifact reports invalid JSON.
+  const envelope = value && !Array.isArray(value) && typeof value === "object"
+    && value.schemaVersion === AUDIT_STORE_SCHEMA_VERSION && Array.isArray(value.events)
+    && typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt) && value.updatedAt > 0
+    && Object.keys(value).every(key => ["schemaVersion", "events", "updatedAt"].includes(key));
+  const events = Array.isArray(value) ? value : envelope ? value.events : null;
+  if (!events) return storage; // Unknown envelopes/scalars remain unsupported.
+  const ids = new Set();
+  if (!events.every(event => {
+    if (!event || typeof event !== "object" || Array.isArray(event)
+      || typeof event.id !== "string" || typeof event.type !== "string") return false;
+    const normalized = normalizeAuditEvent(event);
+    if (!normalized.id || !normalized.type || !(normalized.createdAt > 0) || ids.has(normalized.id)) return false;
+    // Versioned writer output is already canonical. Refuse an envelope whose
+    // events the normalizer would alter or drop fields from; no implicit repair.
+    const fields = Object.keys(normalized).sort();
+    if (envelope && (Object.keys(event).length !== fields.length
+      || JSON.stringify(fields.map(key => event[key])) !== JSON.stringify(fields.map(key => normalized[key])))) return false;
+    ids.add(normalized.id);
+    return true;
+  })) return null;
+  if (!envelope) return storage;
+  const arrayView = JSON.stringify(events);
+  return Object.freeze({ getItem: key => key === STORAGE_KEYS.AUDIT_EVENTS ? arrayView : storage.getItem(key) });
+}
+
+// These reads never normalize/migrate persisted state. Eligibility only permits
+// a NEW read-only comparison; neither a cached UI verdict nor the global ledger
+// high-water mark can authorize the retirement transaction below.
+function historicalWorkspaceResidue(storage, companyId, startedAt, reject = () => null) {
+  const ledger = JSON.parse(storage.getItem(STORAGE_KEYS.CLOUD_MUTATION_LEDGER));
+  const queue = JSON.parse(storage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
+  if (!Array.isArray(ledger?.entries) || normalizeCloudMutationLedger(ledger).entries.length !== ledger.entries.length) return reject("invalid_mutation_ledger");
+  const candidates = getHistoricalWorkspaceBaselineCandidates(ledger, { companyId, before: startedAt });
+  const active = ledger.entries.filter(isActiveCloudMutation);
+  if (active.length !== candidates.length || (!active.length && !isLegacyCompatibilityQueue(queue))) return reject("active_work_not_historical");
+  if (!isInactiveWorkspaceBaselineQueue(queue, { companyId, before: startedAt })) return reject("queue_not_inactive");
+  if (storage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)) return reject("convergence_journal_present");
+  if (storage.getItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE)) return reject("cloud_auto_backup_pause_present");
+  const partialRecovery = storage.getItem(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS);
+  if (partialRecovery != null && partialRecovery !== "" && partialRecovery !== "null") return reject("partial_recovery_status_present");
+  const verificationStorage = historicalAuditStorageSnapshot(storage);
+  if (!verificationStorage) return reject("workspace_artifact_unsupported_shape", "audit_events");
+  const { snapshot, artifact } = buildLocalSnapshotFromStorage(verificationStorage);
+  if (!CORE_BUSINESS_FAMILIES.every(family => Array.isArray(snapshot[family]))) return reject("invalid_core_business_snapshot");
+  if (!CORE_BUSINESS_FAMILIES.some(family => snapshot[family].length > 0)) return reject("empty_core_business_snapshot");
+  const warning = artifact.parseWarnings.find(warning => warning.severity === "error" || warning.code.startsWith("unsupported_shape:"));
+  if (warning) {
+    // Only a fixed record-family enum may leave this read-only classifier.
+    // Export-artifact warnings also cover audit events, separately from the
+    // integrity scanner; never expose a warning's text or stored value.
+    const family = ["CUSTOMERS", "PROJECTS", "ESTIMATES", "INVOICES", "COMPANY_PROFILE", "SETTINGS", "SCOPE_TEMPLATES", "AUDIT_EVENTS"]
+      .find(name => STORAGE_KEYS[name] === warning.key)?.toLowerCase() || "unavailable";
+    return reject(warning.severity === "error" ? "workspace_artifact_parse_error" : "workspace_artifact_unsupported_shape", family);
+  }
+  if (scanLocalDataIntegrity(snapshot).blockers.length > 0) return reject("local_integrity_blocker");
+  return { ledger, queue, candidates, snapshot, verificationStorage };
+}
+
+// Shares every predicate with the real proof owner. No writes, normalization
+// persistence, verification, payloads or identities are returned to diagnostics.
+export function getHistoricalWorkspaceBaselineEligibility({ storage = localStorage, companyId = "" } = {}) {
+  if (!companyId) return { eligible: false, code: "company_identity_missing", family: "none" };
+  try {
+    let rejection = { eligible: false, code: "historical_workspace_read_failed", family: "none" };
+    const residue = historicalWorkspaceResidue(storage, companyId, Date.now(), (code, family = "none") => {
+      rejection = { eligible: false, code, family };
+      return null;
+    });
+    return residue ? { eligible: true, code: "eligible", family: "none" } : rejection;
+  } catch { return { eligible: false, code: "historical_workspace_read_failed", family: "none" }; }
+}
+
+export function canVerifyHistoricalWorkspaceResidue(options = {}) {
+  return getHistoricalWorkspaceBaselineEligibility(options).eligible;
+}
+
+// Prove the ORIGINAL mutation's named relationships, not the verifier's nullable
+// FK projection. No missing parent may turn into an acceptable null, and no
+// different current relationship may silently supersede the requested one.
+function historicalMutationParentsMatch(entry, local, cloud, companyId) {
+  const family = entry.entityType === CLOUD_MUTATION_ENTITY.ESTIMATE ? "estimates" : "invoices";
+  const mapper = family === "estimates" ? mapLocalEstimateToBackendEstimate : mapLocalInvoiceToBackendInvoice;
+  const current = asArray(local[family]).filter(row => entityId(row) === entry.documentId);
+  const targets = asArray(cloud.raw?.[family]).filter(row => asText(row.legacy_local_id) === entry.documentId && asText(row.company_id) === companyId);
+  if (current.length !== 1 || targets.length !== 1) return false;
+  const intended = mapper(entry.payload, {}), canonical = mapper(current[0], {}), target = targets[0];
+  const parents = [["customers", "customer_legacy_local_id", "customer_id"], ["projects", "project_legacy_local_id", "project_id"]];
+  if (family === "invoices") {
+    if (!asText(intended.source_estimate_legacy_local_id)) return false;
+    parents.push(["estimates", "source_estimate_legacy_local_id", "estimate_id"]);
+    if (asText(target.source_estimate_legacy_id) !== asText(intended.source_estimate_legacy_local_id)) return false;
+  } else if (entry.lastErrorCode === "projects_parent_missing" && !asText(intended.project_legacy_local_id)) return false;
+  return parents.every(([parentFamily, key, column]) => {
+    const reference = asText(intended[key]);
+    if (asText(canonical[key]) !== reference) return false;
+    if (!reference) return !asText(target[column]);
+    const localParents = asArray(local[parentFamily]).filter(row => entityId(row) === reference);
+    const cloudParents = asArray(cloud.raw?.[parentFamily]).filter(row => asText(row.legacy_local_id) === reference && asText(row.company_id) === companyId);
+    return localParents.length === 1 && cloudParents.length === 1 && asText(cloudParents[0].id)
+      && asText(target[column]) === asText(cloudParents[0].id);
+  });
+}
+
+function historicalPayloadMatchesCanonical(entry, local) {
+  const family = entry.entityType === CLOUD_MUTATION_ENTITY.ESTIMATE ? "estimates" : "invoices";
+  const current = asArray(local[family]).filter(row => entityId(row) === entry.documentId);
+  return current.length === 1 && sameFamilyEntity(family, entry.payload, current[0]);
+}
+
+// No wholesale profile/template normalizer is safe here: those can discard
+// fields, add defaults/identities, sort children, filter and deduplicate records.
+// Only phone punctuation is ignored under normalizeCompanyProfile's existing
+// digits contract, with an explicit guard against truncation or extensions.
+function historicalProfilePhoneEquivalent(left, right) {
+  const digits = value => {
+    if (typeof value !== "string" || !/^[0-9+().\-\s]+$/.test(value)) return null;
+    const raw = value.replace(/\D/g, "");
+    return raw.length > 0 && raw.length <= 11 ? sanitizePhoneDigits(value, 11) : null;
+  };
+  if (!isSupplementalRecord(left) || !isSupplementalRecord(right)) return false;
+  const phone = digits(left.phone);
+  return phone !== null && phone === digits(right.phone)
+    && cloudSyncEqual({ ...left, phone }, { ...right, phone });
+}
+
+function historicalTemplateIndex(records) {
+  if (!Array.isArray(records) || records.some(row => !isSupplementalRecord(row)
+    || typeof row.id !== "string" || !row.id.trim() || row.id !== row.id.trim())) return null;
+  const indexed = mapById(records);
+  return indexed.duplicateIds.length ? null : indexed.map;
+}
+
+// This reads the CURRENT source record without calling the template normalizer,
+// which can synthesize ids/defaults. A failed read is never reported as missing.
+export function readHistoricalTemplateCaptureStatus({ storage = localStorage } = {}) {
+  let raw;
+  try { raw = storage.getItem(STORAGE_KEYS.SCOPE_TEMPLATES); } catch { return "read_unavailable"; }
+  if (raw == null) return "missing_source_storage";
+  let value;
+  try { value = JSON.parse(raw); } catch { return "malformed_stored_data"; }
+  if (!Array.isArray(value)) return "unsupported_storage_shape";
+  if (!historicalTemplateIndex(value)) return "unsupported_template_records";
+  return value.length ? "captured_records" : "captured_empty";
+}
+
+function historicalTemplateCaptureProof(snapshot, storage) {
+  let cloudStatus = "snapshot_unavailable";
+  const supplemental = snapshot?.supplemental;
+  if (snapshot?.ok) {
+    if (supplemental?.status === "missing") cloudStatus = "bundle_missing";
+    else if (supplemental?.status === "invalid") cloudStatus = "bundle_invalid";
+    else if (supplemental?.status === "error") {
+      const codes = asArray(supplemental.codes);
+      cloudStatus = codes.includes("app_restore_bundle_read_failed") ? "bundle_read_unavailable"
+        : codes.includes("app_restore_bundle_duplicate_rows") ? "bundle_selection_error" : "bundle_read_or_selection_error";
+    } else if (supplemental?.status === "available") {
+      const value = supplemental.bundle?.scopeTemplates;
+      cloudStatus = value === null ? "uncaptured_null" : !Array.isArray(value) ? "unsupported_storage_shape"
+        : !historicalTemplateIndex(value) ? "unsupported_template_records" : value.length ? "captured_records" : "captured_empty";
+    }
+  }
+  // The existing writer stores the bundle, not its capture notices. It maps
+  // missing, invalid JSON and unsupported source shapes to the SAME null. That
+  // historical reason is irrecoverable from null; never infer [] or its origin.
+  return { localStatus: readHistoricalTemplateCaptureStatus({ storage }), cloudStatus,
+    historicalNullReason: cloudStatus === "uncaptured_null" ? "not_recorded_in_bundle" : "not_applicable" };
+}
+
+// readStoredScopeTemplates orders the library for display; normal convergence
+// compares its complete records by stable id. Outer library order has no saved
+// business meaning. Every record field and ALL inner array ordering stay strict.
+function historicalTemplateCollectionEquivalent(left, right) {
+  const local = historicalTemplateIndex(left), cloud = historicalTemplateIndex(right);
+  return Boolean(local && cloud && local.size === cloud.size
+    && [...local].every(([id, record]) => cloud.has(id) && cloudSyncEqual(record, cloud.get(id))));
+}
+
+// Independent classifications for BOTH families. Profile key candidates are
+// scrubbed by safeHistoricalBundleProof before leaving this owner; arbitrary
+// key names, identities, values and records never enter its public diagnostics.
+function historicalPortableDifference(family, left, right) {
+  const detail = Object.fromEntries(PORTABLE_DIFFERENCE_FLAGS.map(key => [key, false]));
+  const canonicalLeft = normalizeCloudSyncValue(left), canonicalRight = normalizeCloudSyncValue(right);
+  const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const matched = equal(canonicalLeft, canonicalRight);
+  detail.serializationOnly = matched && !equal(left, right);
+  if (family === "companyProfile") {
+    const localFields = isSupplementalRecord(canonicalLeft) ? canonicalLeft : {};
+    const cloudFields = isSupplementalRecord(canonicalRight) ? canonicalRight : {};
+    detail.localOnlyFieldKeys = Object.keys(localFields).filter(key => !Object.prototype.hasOwnProperty.call(cloudFields, key));
+    detail.cloudOnlyFieldKeys = Object.keys(cloudFields).filter(key => !Object.prototype.hasOwnProperty.call(localFields, key));
+    detail.differingFieldKeys = Object.keys(localFields).filter(key => Object.prototype.hasOwnProperty.call(cloudFields, key)
+      && !equal(localFields[key], cloudFields[key]));
+    detail.unsupportedShape = [left, right].some(value => value != null && !isSupplementalRecord(value));
+    detail.phoneFormattingEquivalent = !matched && historicalProfilePhoneEquivalent(left, right);
+  } else {
+    detail.unsupportedShape = [left, right].some(value => value != null && !Array.isArray(value));
+    detail.identityIssue = [left, right].some(value => Array.isArray(value) && !historicalTemplateIndex(value));
+    detail.unsupportedShape ||= detail.identityIssue;
+    detail.collectionOrderEquivalent = !matched && historicalTemplateCollectionEquivalent(left, right);
+  }
+  const walk = (local, cloud) => {
+    if (equal(local, cloud)) return;
+    if (Array.isArray(local) && Array.isArray(cloud)) {
+      if (equal(local.map(row => JSON.stringify(row)).sort(), cloud.map(row => JSON.stringify(row)).sort())) {
+        detail.orderingDifference = true; return;
+      }
+      const lm = historicalTemplateIndex(local), cm = historicalTemplateIndex(cloud);
+      if (lm && cm) {
+        const localOrder = [...lm.keys()].filter(id => cm.has(id));
+        const cloudOrder = [...cm.keys()].filter(id => lm.has(id));
+        detail.orderingDifference ||= !equal(localOrder, cloudOrder);
+        detail.localOnlyRecords ||= [...lm.keys()].some(id => !cm.has(id));
+        detail.cloudOnlyRecords ||= [...cm.keys()].some(id => !lm.has(id));
+        lm.forEach((row, id) => { if (cm.has(id)) walk(row, cm.get(id)); });
+      } else {
+        if (local.length !== cloud.length) detail.differentValues = true;
+        local.slice(0, Math.min(local.length, cloud.length)).forEach((row, index) => walk(row, cloud[index]));
+      }
+    } else if (isSupplementalRecord(local) && isSupplementalRecord(cloud)) {
+      detail.localOnlyFields ||= Object.keys(local).some(key => !Object.prototype.hasOwnProperty.call(cloud, key));
+      detail.cloudOnlyFields ||= Object.keys(cloud).some(key => !Object.prototype.hasOwnProperty.call(local, key));
+      Object.keys(local).forEach(key => { if (Object.prototype.hasOwnProperty.call(cloud, key)) walk(local[key], cloud[key]); });
+    } else detail.differentValues = true;
+  };
+  walk(canonicalLeft, canonicalRight);
+  if (detail.phoneFormattingEquivalent) detail.differentValues = false;
+  const differences = ["localOnlyFields", "cloudOnlyFields", "differentValues", "orderingDifference", "localOnlyRecords", "cloudOnlyRecords"];
+  const codes = ["local_only_fields", "cloud_only_fields", "value_difference", "ordering_difference", "local_only_records", "cloud_only_records"];
+  const active = differences.map((key, i) => detail[key] ? codes[i] : null).filter(Boolean);
+  detail.classification = detail.unsupportedShape ? "unsupported_shape"
+    : matched ? detail.serializationOnly ? "serialization_equivalent" : "matched"
+    : detail.phoneFormattingEquivalent ? "phone_format_equivalent"
+    : detail.collectionOrderEquivalent ? "collection_order_equivalent"
+    : left == null || right == null ? "capture_difference"
+    : active.length === 1 ? active[0] : "mixed_difference";
+  return detail;
+}
+
+function historicalWorkspaceBundleProof(local, snapshot, storage) {
+  const available = Boolean(snapshot?.ok) && snapshot.supplemental?.status === "available";
+  const families = ["companyProfile", "settings", "scopeTemplates"];
+  const companyProfileDifference = available ? historicalPortableDifference("companyProfile", supplementalValue(local.companyProfile), supplementalValue(snapshot.mapped?.companyProfile)) : null;
+  const scopeTemplatesDifference = available ? historicalPortableDifference("scopeTemplates", local.scopeTemplates, snapshot.mapped?.scopeTemplates) : null;
+  const matches = families.map(family => available ? cloudSyncEqual(
+    family === "scopeTemplates" ? local[family] : supplementalValue(local[family]),
+    family === "scopeTemplates" ? snapshot.mapped?.[family] : supplementalValue(snapshot.mapped?.[family])) : null);
+  if (available) {
+    matches[0] = !companyProfileDifference.unsupportedShape && (matches[0] || companyProfileDifference.phoneFormattingEquivalent);
+    matches[2] = !scopeTemplatesDifference.unsupportedShape && (matches[2] || scopeTemplatesDifference.collectionOrderEquivalent);
+  }
+  const failed = available ? matches.indexOf(false) : -1;
+  const family = families[failed];
+  const status = snapshot?.supplemental?.status;
+  const shape = value => value === undefined ? "missing" : value === null ? "null" : Array.isArray(value) ? "array" : typeof value === "object" ? "object" : "scalar";
+  return safeHistoricalBundleProof({
+    code: !snapshot?.ok ? "cloud_snapshot_unavailable" : status !== "available"
+      ? ({ missing: "app_restore_bundle_missing", invalid: "app_restore_bundle_invalid", error: "app_restore_bundle_error" }[status] || "app_restore_bundle_unavailable")
+      : failed >= 0 ? ["company_profile_mismatch", "settings_mismatch", "scope_templates_mismatch"][failed] : "matched",
+    family: failed >= 0 ? ["company_profile", "settings", "scope_templates"][failed] : "none",
+    snapshotAvailable: Boolean(snapshot?.ok), supplementalStatus: status,
+    companyProfileMatched: matches[0], settingsMatched: matches[1], scopeTemplatesMatched: matches[2],
+    scopeTemplateCapture: historicalTemplateCaptureProof(snapshot, storage),
+    ...(companyProfileDifference ? { companyProfileDifference } : {}),
+    ...(scopeTemplatesDifference ? { scopeTemplatesDifference } : {}),
+    localShape: family ? shape(local[family]) : "unavailable", cloudShape: family ? shape(snapshot.mapped?.[family]) : "unavailable",
+  });
+}
+
+async function runVerifiedHistoricalWorkspaceRemediation({ storage, configured, user, company, verifyCloud = runSupabaseCloudVerification }) {
+  const refused = (code, details = {}) => ({ ok: false, status: "skipped", code, noWritesPerformed: true, noCloudWritesPerformed: true, ...details });
+  const userId = asText(user?.id), companyId = asText(company?.id);
+  if (!configured || !userId || !companyId) return refused("prerequisites_missing");
+  const workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
+  // Reuse the recovery owner's exclusive lease, rather than racing an active
+  // reset or inventing another recovery marker. No lease means no remediation.
+  const leased = await withVaultDeviceRecoveryLease({ workspaceTag, operation: async () => {
+    const startedAt = Date.now();
+    const initial = historicalWorkspaceResidue(storage, companyId, startedAt);
+    if (!initial) return refused("no_historical_workspace_residue");
+    const generation = getVaultRuntimeStatus().generation;
+    const browserClaim = getBrowserSurfaceClaimToken();
+    const lock = readCloudOperationRunLock();
+    // Audit history is local evidence, not one of the cloud comparison tables.
+    // Bind its complete original envelope/array bytes (including metadata and
+    // ordering) to the same hash, generation and before-commit CAS guards.
+    const before = [...Object.values(FAMILY_KEYS), STORAGE_KEYS.AUDIT_EVENTS, STORAGE_KEYS.CLOUD_MUTATION_LEDGER, STORAGE_KEYS.CLOUD_BACKUP_QUEUE,
+      STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL, STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS,
+      STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE, STORAGE_KEYS.CLOUD_SYNC_BASELINE, STORAGE_KEYS.CLOUD_ASSET_BINDINGS,
+      STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT].map(key => [key, storage.getItem(key)]);
+    const contextCurrent = (committing = false) => {
+      const identity = getActiveAccountWorkspaceIdentity();
+      const currentLock = readCloudOperationRunLock();
+      const checkpoint = readVaultDeviceRecoveryCheckpoint({ storage, workspaceTag });
+      return identity.userId === userId && identity.companyId === companyId
+        && storage === localStorage && storage === getActiveAccountScopedStorage()
+        && isAuthoritativeVaultRuntimeInstalled(workspaceTag)
+        && getVaultRuntimeStatus().generation === generation && getVaultRuntimeStatus().pending === 0
+        && (committing ? isVaultRuntimeReadable(generation) : isVaultRuntimeReady(generation))
+        && browserClaim && isBrowserSurfaceActive() && getBrowserSurfaceClaimToken() === browserClaim
+        && lock.locked && lock.owner === CLOUD_OPERATION_OWNER.CONVERGENCE
+        && currentLock.leaseId === lock.leaseId && currentLock.owner === lock.owner
+        && checkpoint.ok && !checkpoint.checkpoint
+        && before.every(([key, value]) => storage.getItem(key) === value && runtimeGetItem(key) === value);
+    };
+    if (!contextCurrent()) return refused("historical_workspace_context_changed");
+    const startAccess = await ensureCurrentDeviceCanApplyLocalRestore({ storage, configured, user, company, reason: "historical_workspace_verification" });
+    if (!startAccess?.ok || !contextCurrent()) return refused("device_not_active");
+    const startFence = startAccess.access?.fence;
+    // Always execute fresh reads here. Never accept a caller's cloudSnapshot,
+    // lastConvergenceResult, verifiedCurrent or previously cached verification.
+    const snapshot = await readSupabaseCloudConvergenceSnapshot({ configured, user, company });
+    // Separate a changed authoritative context from a genuine bundle mismatch.
+    if (!contextCurrent()) return refused("historical_workspace_context_changed");
+    const historicalBundleProof = historicalWorkspaceBundleProof(initial.snapshot, snapshot, initial.verificationStorage);
+    if (historicalBundleProof.code !== "matched") return refused("workspace_bundle_not_matched", { historicalBundleProof });
+    if (relationshipCodes(initial.snapshot).length || relationshipCodes(snapshot.mapped).length
+      || !initial.candidates.every(entry => historicalMutationParentsMatch(entry, initial.snapshot, snapshot, companyId))) {
+      return refused("historical_required_parent_unresolved");
+    }
+    const verification = await verifyCloud({ storageSnapshot: initial.verificationStorage, configured, user, company });
+    const verifiedAt = Date.parse(verification?.generatedAt);
+    const tables = ["customers", "projects", "estimates", "invoices", "invoice_payments", "estimate_line_items", "invoice_line_items"];
+    if (!verification?.ok || verification.allMatched !== true
+      || verification.verificationVersion !== SUPABASE_CLOUD_VERIFICATION_VERSION || verification.company?.id !== companyId
+      || !["supabaseConfigured", "signedIn", "hasCompany"].every(key => verification.validations?.[key] === true)
+      || !(verifiedAt >= startedAt && verifiedAt <= Date.now())
+      || verification.tableResults?.length !== tables.length
+      || !tables.every(table => verification.tableResults.filter(row => row.table === table && row.status === "matched").length === 1)
+      || asArray(verification.notices).some(notice => ["warning", "error"].includes(notice.level) || notice.code === "older_estimates_kept_in_cloud")
+      || asArray(verification.blockers).length || asArray(verification.availableRepairs).length || asArray(verification.repairs).length) return refused("strict_workspace_match_required");
+    if (!contextCurrent()) return refused("historical_workspace_context_changed");
+    const proof = { userId, companyId, workspaceTag, generation, startedAt, verifiedAt,
+      snapshotHash: stableCloudSyncHash(before) };
+    const ledger = initial.candidates.length ? buildWorkspaceBaselineRetiredLedger(initial.ledger, {
+      ...proof, coversPayload: entry => historicalPayloadMatchesCanonical(entry, initial.snapshot),
+    }) : initial.ledger;
+    if (!ledger) return refused("historical_mutation_intent_uncovered");
+    const queue = buildWorkspaceBaselineRetiredQueue(initial.queue, proof);
+    if (!ledger || !queue) return refused("historical_workspace_proof_stale");
+    const records = [];
+    if (initial.candidates.length) records.push({ logicalKey: STORAGE_KEYS.CLOUD_MUTATION_LEDGER, value: JSON.stringify(ledger) });
+    if (queue !== initial.queue) records.push({ logicalKey: STORAGE_KEYS.CLOUD_BACKUP_QUEUE, value: JSON.stringify(queue) });
+    await runtimeCommitAtomicRecords(records, { beforeCommit: async () => {
+      if (!contextCurrent(true)) return false;
+      const access = await ensureCurrentDeviceCanApplyLocalRestore({ storage, configured, user, company, reason: "before_historical_workspace_retirement" });
+      return operationFenceStillCurrent({ startFence, completionAccess: access }) && contextCurrent(true);
+    } });
+    return { ok: true, status: "matched", retiredCount: initial.candidates.length,
+      queueRetired: queue !== initial.queue, noWritesPerformed: false, noCloudWritesPerformed: true, historicalBundleProof };
+  } });
+  return leased.acquired ? leased.value : refused("recovery_busy_or_unavailable");
+}
+
 async function runCloudConvergenceAttempt({ storage = localStorage, configured = false, user = null, company = null, cloudSnapshot = null, deviceAccess = null, completionDeviceAccess = null, verifyCloud = runSupabaseCloudVerification } = {}) {
   const companyId = asText(company?.id); const userId = asText(user?.id);
   if (!configured || !companyId || !userId) return { ok: false, status: "unavailable", code: "prerequisites_missing", noWritesPerformed: true };
-  const recovered = recoverInterruptedCloudConvergence({ storage });
+  const deviceId = getOrCreateLocalDeviceId(storage);
+  const journalContext = { storage, companyId, userId, deviceId };
+  const recovered = recoverInterruptedCloudConvergence(journalContext);
   if (!recovered.ok) return { ok: false, status: "critical", code: recovered.code, noWritesPerformed: true };
   const local = localSnapshot(storage);
   const snapshot = cloudSnapshot || await readSupabaseCloudConvergenceSnapshot({ configured, user, company });
@@ -869,16 +1553,19 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
   };
   // Re-read every metadata-derived value AFTER recovery so the proof, the plan
   // and the change-detection guard all agree on one post-recovery view.
-  const beforeValues = snapshotValues(storage); const beforeQueueRevision = queueRevision(storage);
+  // queueRevision() may normalize an older persisted queue or add missing
+  // review provenance. Perform that metadata-only migration before capturing
+  // the byte-for-byte rollback/change-detection snapshot.
+  const beforeQueueRevision = queueRevision(storage); const beforeValues = snapshotValues(storage);
   const baseline = readCloudSyncBaseline(companyId, storage);
   const plan = buildCloudConvergencePlan({ local, cloud: snapshot.mapped, baseline: baseline?.snapshots || null, cloudSnapshot: snapshot, companyId, storage });
   const attemptId = stableCloudSyncHash({ companyId, userId, queueRevision: beforeQueueRevision, local, cloud: snapshot.mapped, baseline: baseline?.version || 0 });
   if (!plan.safe) {
-    const vaultJournal = { version: CLOUD_CONVERGENCE_VERSION, companyId, userId, attemptId, createdAt: now(), queueRevision: beforeQueueRevision, previous: { [VAULT_KEY]: beforeValues[VAULT_KEY] }, plannedFamilies: [VAULT_KEY] };
+    const vaultJournal = { version: CLOUD_CONVERGENCE_VERSION, companyId, userId, deviceId, attemptId, createdAt: now(), queueRevision: beforeQueueRevision, previous: { [VAULT_KEY]: beforeValues[VAULT_KEY] }, plannedFamilies: [VAULT_KEY] };
     if (!writeJournal(storage, vaultJournal)) return { ok: false, status: "critical", code: "journal_write_failed", noWritesPerformed: true };
     const recorded = recordConflicts({ storage, companyId, plan, baseline: baseline?.snapshots || null, local, cloud: snapshot.mapped, cloudSnapshot: snapshot, attemptId });
     if (!recorded) {
-      const rollback = recoverInterruptedCloudConvergence({ storage });
+      const rollback = recoverInterruptedCloudConvergence(journalContext);
       return { ok: false, status: rollback.ok ? "rolled_back" : "critical_local_recovery_required", code: rollback.ok ? "conflict_vault_write_failed" : rollback.code, noWritesPerformed: true };
     }
     storage.removeItem(JOURNAL_KEY);
@@ -897,7 +1584,15 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
     entityType: "invoice_payment", localLegacyId: entityId(payment), cloudUuid: snapshot.uuidMaps?.invoicePayments?.[entityId(payment)], companyId, source: "cloud_convergence",
   })).filter((entry) => entry.localLegacyId && entry.cloudUuid));
   const bindingEntries = [...plan.bindingEntries, ...additionBindingEntries, ...addedPaymentBindingEntries];
-  if (Object.keys(writes).length === 0 && bindingEntries.length === 0) {
+  const queueBefore = readPersistedCloudBackupQueueState(storage)?.state;
+  const pendingReviewQueue = Boolean(
+    queueBefore?.pending
+    && (queueBefore?.status === CLOUD_BACKUP_STATUS.REMOTE_CHANGED || queueBefore?.status === CLOUD_BACKUP_STATUS.CONFLICT)
+  );
+  // A historical review queue must use the existing journaled, fenced, strict
+  // verification completion below even when the planner finds no local writes.
+  // Only that path may acknowledge the exact queue revision as clean.
+  if (Object.keys(writes).length === 0 && bindingEntries.length === 0 && !pendingReviewQueue) {
     // Local-only differences stay local and keep the backup pending; they must
     // not require strict allMatched before the backup worker runs.
     if (plan.localOnly) return { ok: true, status: "matched", noWritesPerformed: true, localOnly: true };
@@ -929,6 +1624,9 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
           repairRowCount: Array.isArray(verification?.availableRepairs)
             ? verification.availableRepairs.reduce((sum, repair) => sum + (Number(repair?.count) || 0), 0)
             : 0,
+          repairDocumentIds: Array.isArray(verification?.availableRepairs)
+            ? [...new Set(verification.availableRepairs.flatMap((repair) => Array.isArray(repair?.parentLegacyIds) ? repair.parentLegacyIds : []).map(asText).filter(Boolean))]
+            : [],
           noticeCodes: Array.isArray(verification?.notices)
             ? [...new Set(verification.notices.filter((notice) => notice?.level === "warning" || notice?.level === "error").map((notice) => asText(notice?.code)).filter(Boolean))]
             : [],
@@ -939,6 +1637,11 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
   }
   const access = deviceAccess || await ensureCurrentDeviceCanApplyLocalRestore({ configured, user, company, storage, reason: "cloud_convergence" });
   if (!access?.ok) return { ok: false, status: "blocked", code: "device_not_active", noWritesPerformed: true };
+  // Immutable for this transaction. Strict cloud verification below is awaited,
+  // so ownership can change underneath it; proving the device is merely ACTIVE at
+  // completion would accept A/v5 -> B/v6 -> A/v7 and let a stale transaction
+  // capture a baseline, clear the queue and remove the journal.
+  const startFence = access?.access?.fence || null;
   if (plan.bootstrap) {
     const recheckedProof = buildCleanReplicaBootstrapProof({ storage, companyId, local, cloud: snapshot.mapped, cloudSnapshot: snapshot, baseline: null });
     if (!recheckedProof.ok || Number(recheckedProof.queueRevision) !== Number(beforeQueueRevision)) return { ok: false, status: "aborted", code: recheckedProof.code || "baseline_bootstrap_local_pending", noWritesPerformed: true };
@@ -955,10 +1658,11 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
     bindingEntries,
     willCaptureBaseline: !plan.localOnly,
     willClearQueue: !plan.localOnly,
+    willAppendLedger: plan.localOnly,
     metadataRecovery: metadataStage.attempted,
   });
   const previous = rollbackKeys.reduce((out, key) => ({ ...out, [key]: beforeValues[key] ?? readRaw(storage, key) }), {});
-  const journal = { version: CLOUD_CONVERGENCE_VERSION, companyId, userId, deviceId: getOrCreateLocalDeviceId(storage), attemptId, createdAt: now(), queueRevision: beforeQueueRevision, previous, plannedFamilies: Object.keys(writes) };
+  const journal = { version: CLOUD_CONVERGENCE_VERSION, companyId, userId, deviceId, attemptId, createdAt: now(), queueRevision: beforeQueueRevision, previous, plannedFamilies: Object.keys(writes) };
   if (!writeJournal(storage, journal)) return { ok: false, status: "critical", code: "journal_write_failed", noWritesPerformed: true };
   try {
     if (bindingEntries.length) {
@@ -968,7 +1672,14 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
     for (const [key, value] of Object.entries(writes)) { if (!writeRaw(storage, key, value)) throw new Error("local_write_failed"); }
     const localVerification = verifyLocalApply({ before: beforeValues, writes, storage, localBefore: local, plan, expectedQueueRevision: beforeQueueRevision });
     if (!localVerification.ok) throw new Error(localVerification.code);
-    if (plan.localOnly) markCloudBackupDirty({ reason: "cloud_convergence_local_only", severity: "normal" });
+    if (plan.localOnly) {
+      const mutations = buildConvergenceLocalOnlyMutations({
+        plan,
+        snapshot: buildLocalSnapshotFromStorage(storage).snapshot,
+        companyId,
+      });
+      await appendCloudMutationsDurably(mutations, { storage });
+    }
     else {
       const verification = await verifyCloud({ storageSnapshot: storage, configured, user, company });
       const warning = Array.isArray(verification?.notices) && verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
@@ -977,6 +1688,8 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
       if (!verification?.ok || !verification?.allMatched || warning || blocker || repairAvailable) throw new Error("cloud_verification_failed");
       const completionAccess = completionDeviceAccess || await ensureCurrentDeviceCanApplyLocalRestore({ configured, user, company, storage, reason: "before_convergence_complete" });
       if (!completionAccess?.ok || queueRevision(storage) !== beforeQueueRevision) throw new Error("convergence_completion_guard_failed");
+      // Same GENERATION, not merely the same device.
+      if (!operationFenceStillCurrent({ startFence, completionAccess })) throw new Error("convergence_completion_guard_failed");
       const captured = captureVerifiedCloudSyncBaseline({ storage, companyId, queueRevision: beforeQueueRevision, cloudSnapshot: snapshot, verified: true, deviceAccess: access });
       // Preserve the precise reason (e.g. baseline_quota_exceeded) instead of
       // collapsing every baseline failure into one opaque code.
@@ -993,7 +1706,7 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
     // screens without a full reload. Never returned on a rolled-back path.
     return { ok: true, status: "converged", imported: Object.values(plan.additions).reduce((count, rows) => count + rows.length, 0), localOnly: plan.localOnly, bootstrap: plan.bootstrap, bootstrapReason: plan.bootstrapReason || "", noCloudWritesPerformed: true, changedFamilies: convergenceChangedFamilies(writes, plan), ...metadataReport };
   } catch (error) {
-    const rollback = recoverInterruptedCloudConvergence({ storage });
+    const rollback = recoverInterruptedCloudConvergence(journalContext);
     if (!rollback.ok) return { ok: false, status: "critical_local_recovery_required", code: rollback.code, noCloudWritesPerformed: true };
     return { ok: false, status: "rolled_back", code: asText(error?.message) || "convergence_failed", noCloudWritesPerformed: true };
   }

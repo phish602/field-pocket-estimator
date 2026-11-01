@@ -291,6 +291,14 @@ function extractDocumentLineItems(record = {}, kind = "") {
     const mapped = mapItem(item, "material", index);
     if (mapped) items.push(mapped);
   });
+  // Invoice charges use the same canonical child/metadata contract as labor
+  // and materials. Estimate children retain their existing projection.
+  if (isInvoice && Array.isArray(record?.additionalCharges?.items)) {
+    record.additionalCharges.items.forEach((item, index) => {
+      const mapped = mapItem(item, "additional_charge", index);
+      if (mapped) items.push(mapped);
+    });
+  }
   genericItems.forEach((item, index) => {
     const mapped = mapItem(item, kind || "line_item", index);
     if (mapped) items.push(mapped);
@@ -485,6 +493,45 @@ export function mapLocalEstimateToBackendEstimate(estimate, context) {
   return mapped;
 }
 
+// The existing invoice writer/verifier already persists and compares `notes`.
+// Scope is a separate builder field, so a versioned value in that same column
+// keeps it distinct from ordinary notes without another storage/sync path.
+// Preserve the scope string exactly: headings, list markers, image references,
+// whitespace and line breaks are the builder's persisted formatting contract.
+function encodeInvoiceScopeNotes(source) {
+  const notes = pickText(source?.notes, source?.additionalNotes);
+  if (typeof source?.scopeNotes !== "string") return notes;
+  return JSON.stringify({
+    schema: "estipaid.invoice.scope",
+    version: 1,
+    scopeNotes: source.scopeNotes,
+    notes,
+    ...(Array.isArray(source.scopeImages) ? { scopeImages: clonePlain(source.scopeImages) } : {}),
+    ...(isPlainObject(source.tradeInsert) ? { tradeInsert: clonePlain(source.tradeInsert) } : {}),
+    ...(typeof source?.ui?.includeInvoiceScopeOnPdf === "boolean"
+      ? { includeInvoiceScopeOnPdf: source.ui.includeInvoiceScopeOnPdf } : {}),
+  });
+}
+
+export function decodeInvoiceScopeNotes(value) {
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    const keys = ["schema", "version", "scopeNotes", "notes", "scopeImages", "tradeInsert", "includeInvoiceScopeOnPdf"];
+    if (!isPlainObject(parsed) || parsed.schema !== "estipaid.invoice.scope" || parsed.version !== 1
+      || typeof parsed.scopeNotes !== "string" || typeof parsed.notes !== "string"
+      || Object.keys(parsed).some(key => !keys.includes(key))
+      || ("scopeImages" in parsed && !Array.isArray(parsed.scopeImages))
+      || ("tradeInsert" in parsed && !isPlainObject(parsed.tradeInsert))
+      || ("includeInvoiceScopeOnPdf" in parsed && typeof parsed.includeInvoiceScopeOnPdf !== "boolean")) return null;
+    return parsed;
+  } catch {
+    // Plain legacy notes and unknown/malformed envelopes remain opaque notes.
+    // Never guess scope from them or from the parent estimate.
+    return null;
+  }
+}
+
 export function mapLocalInvoiceToBackendInvoice(invoice, context) {
   const source = isPlainObject(invoice) ? invoice : {};
   const snapshot = isPlainObject(source?.sourceEstimateSnapshot) ? source.sourceEstimateSnapshot : null;
@@ -502,7 +549,7 @@ export function mapLocalInvoiceToBackendInvoice(invoice, context) {
     amount_paid: toNumberOrNull(source?.amountPaid),
     balance_remaining: toNumberOrNull(source?.balanceRemaining),
     total: toNumberOrNull(source?.invoiceTotal ?? source?.total ?? snapshot?.approvedTotal),
-    notes: pickText(source?.notes, source?.additionalNotes),
+    notes: encodeInvoiceScopeNotes(source),
     terms: pickText(source?.terms),
     customer_name: pickText(source?.customerName, source?.customer?.name, source?.customer?.companyName, source?.customer?.fullName, snapshot?.customerName),
     project_name: pickText(source?.projectName, source?.project?.name, snapshot?.projectName),
@@ -533,6 +580,10 @@ export function mapLocalInvoicePaymentToBackendPayment(payment, invoice, context
     method: pickText(source?.method),
     status: normalizePaymentStatus(source?.status, { payment: source, invoice: targetInvoice }),
     paid_at: toIsoTimestamp(source?.paidAt || source?.date),
+    // Only the contractor's own payment note (the `note` field the payment form
+    // records and the invoice normalizer keeps). Raw provider/import fields such
+    // as `notes` and `stripePayload` are still never carried forward.
+    notes: pickText(source?.note),
     ...mapCommonTimelineFields(source),
   };
 

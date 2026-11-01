@@ -158,6 +158,25 @@ jest.mock("./utils/settings", () => {
   return { DEFAULT_SETTINGS: settings, loadSettings: () => settings };
 });
 
+// This UI regression covers finalization and builder continuity. The encrypted
+// vault transaction is covered in its own suite; model its async success here
+// by applying exactly the serialized writes supplied at the atomic boundary.
+jest.mock("./lib/cloudBackupQueue", () => {
+  const actual = jest.requireActual("./lib/cloudBackupQueue");
+  return {
+    ...actual,
+    commitAtomicCloudQueuedBusinessMutation: async ({ writes = [] }) => {
+      writes.forEach(({ key, value }) => globalThis.localStorage.setItem(key, value));
+      return {
+        ok: true,
+        revision: 1,
+        queue: {},
+        keys: writes.map(({ key }) => key),
+      };
+    },
+  };
+});
+
 import EstimateForm from "./EstimateForm";
 import { DEFAULT_STATE } from "./estimator/defaultState";
 import { computeTotals } from "./estimator/engine";

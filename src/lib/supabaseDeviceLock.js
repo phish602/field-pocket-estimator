@@ -8,6 +8,14 @@ export const LOCAL_DEVICE_ID_KEY = "estipaid-device-id-v1";
 export const DEVICE_LOCK_CHANGED_EVENT = "estipaid:device-lock-changed";
 export const DEVICE_LOCK_LOST_CODE = "device_lock_lost";
 export const DEVICE_LOCKED_CODE = "device_locked";
+// A compare-and-set against the active-device row found a different predecessor:
+// somebody else already advanced the lease. This is ordinary concurrency and must
+// never be answered by retrying an unconditional overwrite.
+export const DEVICE_LEASE_CONFLICT_CODE = "device_lease_conflict";
+// Ownership could not be established or proven at all (network, RLS, malformed
+// row). Distinct from "locked" and from "lease lost" so callers can fail closed
+// without mislabelling the cause.
+export const DEVICE_ACCESS_UNAVAILABLE_CODE = "device_access_unavailable";
 export const DEVICE_LOCK_LOST_RESTORE_MESSAGE =
   "Recovery stopped because EstiPaid was switched to another device.";
 export const DEVICE_LOCK_STOPPED_MESSAGES = {
@@ -129,6 +137,48 @@ function buildDeviceLockValue({ deviceId, deviceName, userId, userEmail, previou
     activeUserEmail: asText(userEmail),
     lockVersion: nextLockVersion > 0 ? nextLockVersion : 1,
   };
+}
+
+// ---------------------------------------------------------------------------
+// DEVICE LEASE FENCE
+//
+// `lockVersion` already advances on every ownership transfer and stays put for a
+// heartbeat by the same owner. That makes it a usable fencing generation, but
+// only if long-running work captures it ONCE at the start and re-proves the SAME
+// generation at every later write boundary.
+//
+// Proving "this device is active" at completion time is not enough: A can start
+// under generation 5, lose the lease to B at 6, take it back at 7, and still see
+// itself as the active device. The fence below makes that sequence fail, because
+// 7 !== 5.
+// ---------------------------------------------------------------------------
+
+export function buildDeviceFence({ companyId = "", deviceId = "", lockVersion = null } = {}) {
+  const normalizedVersion = Number(lockVersion);
+  if (!asText(companyId) || !asText(deviceId) || !Number.isFinite(normalizedVersion)) return null;
+  return Object.freeze({
+    companyId: asText(companyId),
+    deviceId: asText(deviceId),
+    lockVersion: normalizedVersion,
+  });
+}
+
+export function fencesMatch(left, right) {
+  if (!left || !right) return false;
+  return (
+    asText(left.companyId) === asText(right.companyId)
+    && asText(left.deviceId) === asText(right.deviceId)
+    && Number(left.lockVersion) === Number(right.lockVersion)
+  );
+}
+
+// Builds the fence implied by an active-device value for a given local device.
+// Returns null when that device does not currently own the lease.
+export function deviceFenceFromState({ companyId = "", deviceId = "", activeDeviceState = null } = {}) {
+  const state = activeDeviceState && typeof activeDeviceState === "object" ? activeDeviceState : null;
+  if (!state) return null;
+  if (asText(state.activeDeviceId) !== asText(deviceId)) return null;
+  return buildDeviceFence({ companyId, deviceId, lockVersion: state.lockVersion });
 }
 
 function readFromStorage(storage, key) {
@@ -260,6 +310,11 @@ async function writeActiveDeviceState({
 
   try {
     if (asText(rowId)) {
+      // COMPARE-AND-SET. The row is only advanced when it still holds exactly the
+      // predecessor we read. Without these two JSONB predicates a stale heartbeat
+      // that prepared its UPDATE before a takeover could land afterwards and both
+      // reclaim ownership and move `lockVersion` backwards.
+      const expectedState = normalizeDeviceLockValue(previousValue);
       const response = await client
         .from("app_settings")
         .update({
@@ -269,6 +324,10 @@ async function writeActiveDeviceState({
         })
         .eq("id", asText(rowId))
         .eq("company_id", normalizedCompanyId)
+        .eq("setting_scope", "company")
+        .eq("setting_key", DEVICE_LOCK_ROW_KEY)
+        .eq("setting_value->>activeDeviceId", asText(expectedState.activeDeviceId))
+        .eq("setting_value->>lockVersion", String(Number(expectedState.lockVersion)))
         .select("id, setting_value");
 
       if (response?.error) {
@@ -276,13 +335,29 @@ async function writeActiveDeviceState({
           ok: false,
           row: null,
           value: null,
+          code: DEVICE_ACCESS_UNAVAILABLE_CODE,
           error: asText(response.error?.message) || "Unable to update active device state.",
+        };
+      }
+
+      const updatedRows = Array.isArray(response?.data) ? response.data : [];
+      if (updatedRows.length === 0) {
+        // Zero rows means the predecessor moved. Re-read so the caller adopts the
+        // real current owner instead of retrying a blind overwrite.
+        const current = await readActiveDeviceState({ client, companyId: normalizedCompanyId });
+        return {
+          ok: false,
+          row: current.row || null,
+          value: current.value || null,
+          code: DEVICE_LEASE_CONFLICT_CODE,
+          leaseConflict: true,
+          error: "This workspace was claimed by another device.",
         };
       }
 
       return {
         ok: true,
-        row: Array.isArray(response?.data) ? response.data[0] || null : null,
+        row: updatedRows[0] || null,
         value: payload,
         action: "updated",
       };
@@ -306,10 +381,25 @@ async function writeActiveDeviceState({
       .select("id, setting_value");
 
     if (response?.error) {
+      // INSERT RACE. The company-scoped unique app_settings key is the authority:
+      // exactly one creator wins. The loser must adopt the winner's row rather
+      // than retry, which would otherwise replace a legitimate new owner.
+      const current = await readActiveDeviceState({ client, companyId: normalizedCompanyId });
+      if (current.ok && current.value?.activeDeviceId) {
+        return {
+          ok: false,
+          row: current.row || null,
+          value: current.value,
+          code: DEVICE_LEASE_CONFLICT_CODE,
+          leaseConflict: true,
+          error: "This workspace was claimed by another device.",
+        };
+      }
       return {
         ok: false,
         row: null,
         value: null,
+        code: DEVICE_ACCESS_UNAVAILABLE_CODE,
         error: asText(response.error?.message) || "Unable to create active device state.",
       };
     }
@@ -325,6 +415,7 @@ async function writeActiveDeviceState({
       ok: false,
       row: null,
       value: null,
+      code: DEVICE_ACCESS_UNAVAILABLE_CODE,
       error: asText(error?.message) || "Unable to store active device state.",
     };
   }
@@ -410,9 +501,15 @@ export async function claimActiveDevice({
   });
 
   if (!writeResult.ok) {
+    // A lost CAS is normal concurrency, not a failure to retry through. Report the
+    // real current owner so the caller can re-enter the locked/handoff path.
     return {
       ok: false,
       claimed: false,
+      code: writeResult.code || DEVICE_ACCESS_UNAVAILABLE_CODE,
+      leaseConflict: Boolean(writeResult.leaseConflict),
+      lockedByOtherDevice: Boolean(writeResult.leaseConflict),
+      activeDeviceState: writeResult.value || null,
       error: writeResult.error,
       localDeviceId: deviceId,
       localDeviceName: deviceName,
@@ -437,6 +534,13 @@ export async function claimActiveDevice({
     claimed: true,
     takeover: Boolean(force && activeDeviceId && activeDeviceId !== deviceId),
     activeDeviceState: writeResult.value,
+    // The generation this claim established. Long-running work must capture this
+    // once and re-prove it at every later write boundary.
+    fence: buildDeviceFence({
+      companyId,
+      deviceId,
+      lockVersion: writeResult.value?.lockVersion,
+    }),
     localDeviceId: deviceId,
     localDeviceName: deviceName,
   };
@@ -463,6 +567,9 @@ export async function heartbeatActiveDevice({
     };
   }
 
+  // The heartbeat is CAS-guarded like every other write. If a takeover landed
+  // between the read above and this update, the CAS matches zero rows and we
+  // report the real new owner instead of reclaiming the lease.
   const writeResult = await writeActiveDeviceState({
     companyId: asText(company?.id),
     userId: asText(user?.id),
@@ -477,6 +584,15 @@ export async function heartbeatActiveDevice({
     ok: Boolean(writeResult.ok),
     active: Boolean(writeResult.ok),
     activeDeviceState: writeResult.value,
+    code: writeResult.code || "",
+    leaseConflict: Boolean(writeResult.leaseConflict),
+    fence: writeResult.ok
+      ? buildDeviceFence({
+          companyId: asText(company?.id),
+          deviceId,
+          lockVersion: writeResult.value?.lockVersion,
+        })
+      : null,
     error: writeResult.error || "",
   };
 }
@@ -575,13 +691,14 @@ export async function checkCurrentDeviceAccess({
       force: false,
     }).then((result) => ({
       ready: true,
-      status: result.ok ? "active" : "error",
-      isLocked: false,
+      status: result.ok ? "active" : (result.leaseConflict ? "locked" : "error"),
+      isLocked: Boolean(result.leaseConflict),
       isActive: Boolean(result.ok),
       localDeviceId,
       localDeviceName,
       activeDeviceState: result.activeDeviceState || null,
-      reason: "",
+      fence: result.fence || null,
+      reason: result.leaseConflict ? DEVICE_LOCK_EXPLANATION : "",
       error: result.error || "",
     }));
   }
@@ -616,6 +733,9 @@ export async function checkCurrentDeviceAccess({
         localDeviceId,
         localDeviceName,
         activeDeviceState: heartbeatResult.activeDeviceState || readResult.value,
+        fence: heartbeatResult.ok
+          ? heartbeatResult.fence
+          : deviceFenceFromState({ companyId, deviceId: localDeviceId, activeDeviceState: readResult.value }),
         reason: "",
         error: heartbeatResult.error || "",
       };
@@ -629,6 +749,7 @@ export async function checkCurrentDeviceAccess({
       localDeviceId,
       localDeviceName,
       activeDeviceState: readResult.value,
+      fence: deviceFenceFromState({ companyId, deviceId: localDeviceId, activeDeviceState: readResult.value }),
       reason: "",
       error: "",
     };
@@ -698,6 +819,105 @@ export async function ensureCurrentDeviceCanWriteCloud({
     deviceLockLost: false,
     userMessage: "",
     error: "",
+  };
+}
+
+// Completion-boundary comparator for a multi-stage operation.
+//
+// The operations below already re-read ownership before their commit boundary,
+// but "is this device active NOW?" is satisfied by A5 -> B6 -> A7: the original
+// device lost the lease and took it back under a NEWER generation, so a stale
+// in-flight operation would still publish. Comparing the completion read against
+// the IMMUTABLE START generation is what actually closes that race.
+//
+// Pure: it performs no read of its own, so it adds no round trip to operations
+// that already re-read ownership.
+export function operationFenceStillCurrent({ startFence = null, completionAccess = null } = {}) {
+  const currentFence = completionAccess?.access?.fence || completionAccess?.fence || null;
+  return fencesMatch(startFence, currentFence);
+}
+
+export function buildStaleOperationResult(reason = "cloud_write") {
+  const normalizedReason = asText(reason) || "cloud_write";
+  return {
+    ok: false,
+    code: DEVICE_LOCK_LOST_CODE,
+    deviceLockLost: true,
+    reason: normalizedReason,
+    userMessage: getDeviceLockStoppedMessage(normalizedReason),
+    error: getDeviceLockStoppedMessage(normalizedReason),
+  };
+}
+
+// Re-proves that the lease generation an operation STARTED under is still the
+// current one. This is the completion-boundary guard for every multi-stage cloud
+// operation: `ensureCurrentDeviceCanWriteCloud` only answers "am I active now?",
+// which a device that lost and regained the lease would wrongly pass.
+export async function ensureDeviceFenceStillCurrent({
+  configured = false,
+  user = null,
+  company = null,
+  storage = localStorage,
+  fence = null,
+  reason = "cloud_write",
+} = {}) {
+  const normalizedReason = asText(reason) || "cloud_write";
+  if (!fence) {
+    return {
+      ok: false,
+      code: DEVICE_ACCESS_UNAVAILABLE_CODE,
+      deviceLockLost: false,
+      fence: null,
+      currentFence: null,
+      error: "Missing the device lease this operation started under.",
+      userMessage: "Unable to verify that this device still owns the workspace.",
+    };
+  }
+
+  const access = await checkCurrentDeviceAccess({
+    configured,
+    user,
+    company,
+    storage,
+    // A fence check must never create ownership, and must never advance the
+    // generation it is trying to verify.
+    claimIfMissing: false,
+    heartbeatIfActive: false,
+  });
+
+  const currentFence = access.fence
+    || deviceFenceFromState({
+      companyId: asText(company?.id),
+      deviceId: asText(access.localDeviceId),
+      activeDeviceState: access.activeDeviceState,
+    });
+
+  if (fencesMatch(fence, currentFence)) {
+    return { ok: true, code: "", deviceLockLost: false, fence, currentFence, error: "", userMessage: "" };
+  }
+
+  // Anything else is a lost lease: another device owns it now, OR this device
+  // owns it again under a NEWER generation, which still invalidates work that
+  // began under the old one.
+  pauseCloudAutoBackup("device_fence_lost_during_operation");
+  dispatchDeviceLockChanged({
+    companyId: asText(company?.id),
+    activeDeviceId: asText(access.activeDeviceState?.activeDeviceId),
+    action: "fence_lost",
+    reason: normalizedReason,
+    locked: Boolean(access.isLocked),
+  });
+
+  return {
+    ok: false,
+    code: DEVICE_LOCK_LOST_CODE,
+    deviceLockLost: true,
+    fence,
+    currentFence: currentFence || null,
+    access,
+    reason: normalizedReason,
+    error: getDeviceLockStoppedMessage(normalizedReason),
+    userMessage: getDeviceLockStoppedMessage(normalizedReason),
   };
 }
 

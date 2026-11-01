@@ -7,6 +7,7 @@ import {
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 import { CLOUD_RESTORE_COMPLETE_EVENT } from "../lib/supabaseCloudRestore";
+import { STORAGE_KEYS } from "../constants/storageKeys";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -71,10 +72,11 @@ test("renders nothing when not signed in or no cloud workspace", async () => {
   expect(screen.queryByTestId("cloud-backup-status-badge")).not.toBeInTheDocument();
 });
 
-test("shows current status when cloud verification confirms this device is current", async () => {
+test("shows connected status from observational status without queue proof", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "established_workspace" });
   await renderAndSettle();
 
-  expect(screen.getByText("Cloud backup is up to date.")).toBeInTheDocument();
+  expect(screen.getByText("Cloud connected")).toBeInTheDocument();
 });
 
 test("shows a calm pending status when the queue is dirty", async () => {
@@ -111,24 +113,37 @@ test("shows a calm failed status that reassures local work is safe", async () =>
   await renderAndSettle();
 
   expect(screen.getByText("Sync needs attention")).toBeInTheDocument();
-  expect(screen.getByText("Your changes are safe. EstiPaid is retrying cloud sync.")).toBeInTheDocument();
+  expect(screen.getByText("Saved on this device · Sync needs attention")).toBeInTheDocument();
 });
 
-test("shows review-required conflict copy without promising another automatic retry", async () => {
+test("shows review-required conflict as generic sync attention", async () => {
   markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
   markCloudBackupReviewRequired("Cloud payment history requires review.", { status: "conflict" });
 
   await renderAndSettle();
 
-  expect(screen.getByText("Cloud sync conflict")).toBeInTheDocument();
-  expect(screen.getByText("Cloud contains records that require review. EstiPaid will not overwrite or delete them automatically.")).toBeInTheDocument();
+  expect(screen.getByText("Sync needs attention")).toBeInTheDocument();
+  expect(screen.getByText("Saved on this device · Sync needs attention")).toBeInTheDocument();
 });
 
-test("shows a restored confirmation after a cloud-restore-complete event", async () => {
+test("renders verified canonical health over quarantined historical conflict", async () => {
+  localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+    schemaVersion: "2.0.0", pending: true, status: "conflict", reasons: [], domains: [],
+    companyId: "company_1", localMutationRevision: 4, syncingRevision: null,
+    lastVerifiedAt: 123, lastError: "Preserved historical evidence",
+  }));
+
+  await renderAndSettle();
+
+  expect(screen.getByText("Cloud backup is up to date.")).toBeInTheDocument();
+  expect(screen.queryByText("Sync needs attention")).not.toBeInTheDocument();
+});
+
+test("keeps connected status after restore event without verified proof", async () => {
   await renderAndSettle();
   act(() => {
     window.dispatchEvent(new CustomEvent(CLOUD_RESTORE_COMPLETE_EVENT, { detail: { restored: true } }));
   });
 
-  expect(screen.getByText("Cloud backup restored.")).toBeInTheDocument();
+  expect(screen.getByText("Cloud connected")).toBeInTheDocument();
 });

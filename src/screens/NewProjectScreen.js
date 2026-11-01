@@ -8,15 +8,16 @@ import {
   writeStoredProjects,
 } from "../utils/projects";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { commitStoredCustomerCollectionMutation } from "../lib/businessCloudMutationOwners";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
+import { useLanguage } from "../lib/i18n";
 
 const PROJECT_STATUS_OPTIONS = [
-  { key: "draft", label: "Draft" },
-  { key: "estimating", label: "Estimating" },
-  { key: "active", label: "Active" },
-  { key: "completed", label: "Completed" },
-  { key: "archived", label: "Archived" },
+  { key: "draft", labelKey: "newproject.draft" },
+  { key: "estimating", labelKey: "newproject.estimating" },
+  { key: "active", labelKey: "newproject.active" },
+  { key: "completed", labelKey: "newproject.completed" },
+  { key: "archived", labelKey: "newproject.archived" },
 ];
 
 const US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC"];
@@ -31,16 +32,16 @@ function readCustomers() {
   }
 }
 
-function writeCustomers(list) {
+async function writeCustomers(list) {
   try {
-    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(Array.isArray(list) ? list : []));
-    markCloudBackupDirty({
-      reason: "customer_data_saved",
-      domains: ["customers"],
-      severity: "normal",
-      source: "writeCustomers",
+    const committed = await commitStoredCustomerCollectionMutation({
+      previousCustomers: readCustomers(),
+      nextCustomers: Array.isArray(list) ? list : [],
+      event: { reason: "customer_created", source: "NewProjectScreen.writeCustomers" },
     });
+    return committed.records;
   } catch {}
+  return null;
 }
 
 function buildCustomerId() {
@@ -137,6 +138,8 @@ function buildInlineResidentialCustomer({ id, name, phone, email, now }) {
 }
 
 export default function NewProjectScreen({ onBack, onSave }) {
+  // Language and copy come from the app's one owner (src/lib/i18n).
+  const { t } = useLanguage();
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const [customers, setCustomers] = useState(() => readCustomers());
 
@@ -312,7 +315,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
       return;
     }
     const next = [...customers, newCustomer];
-    writeCustomers(next);
+    await writeCustomers(next);
     window.dispatchEvent(new Event("estipaid:customers-changed"));
     setCustomers(next);
     setSelectedCustomerId(id);
@@ -354,7 +357,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
       window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return;
     }
-    writeStoredProjects(next);
+    await writeStoredProjects(next, { reason: "project_created", source: "NewProjectScreen" });
     window.dispatchEvent(new Event("estipaid:projects-changed"));
     if (onSave) onSave(project.id);
   }, [canSave, selectedCustomerId, selectedCustomer, projectName, addrStreet, addrCity, addrState, addrZip, status, notes, onSave, ensureCanMutateBusinessData]);
@@ -362,40 +365,40 @@ export default function NewProjectScreen({ onBack, onSave }) {
   return (
     <div style={S.screen}>
       <div style={S.topBar}>
-        <button type="button" style={S.backBtn} onClick={onBack}>← Cancel</button>
+        <button type="button" style={S.backBtn} onClick={onBack}>{t("newproject.cancel")}</button>
       </div>
 
       <div style={S.heroCard}>
-        <div style={S.title}>New Project</div>
-        <div style={S.subtitle}>Capture project intake details, then continue in the Project Command Center.</div>
+        <div style={S.title}>{t("newproject.newProject")}</div>
+        <div style={S.subtitle}>{t("newproject.captureProjectIntakeDetailsThenContinue")}</div>
       </div>
       <div style={S.workflowHint}>
-        <div style={S.workflowHintTitle}>Next Steps</div>
-        <div style={S.workflowHintCopy}>Save this intake to open the project in the same command-center workflow used across Projects and Project Detail.</div>
+        <div style={S.workflowHintTitle}>{t("newproject.nextSteps")}</div>
+        <div style={S.workflowHintCopy}>{t("newproject.saveIntakeOpenProjectSameCommand")}</div>
       </div>
 
       <div style={S.sectionCard}>
-        <div style={S.sectionHeader}>Project</div>
+        <div style={S.sectionHeader}>{t("newproject.project")}</div>
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
-          <label style={S.label}>Project Name <span style={S.required}>*</span></label>
+          <label style={S.label}>{t("newproject.projectName")}<span style={S.required}>*</span></label>
           <input
             type="text"
             style={S.input}
-            placeholder="e.g. Kitchen Remodel, Roof Repair…"
+            placeholder={t("newproject.eGKitchenRemodelRoofRepair")}
             value={projectName}
             onChange={(e) => setProjectName(e.target.value)}
             autoFocus
           />
         </div>
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
-          <label style={S.label}>Customer</label>
+          <label style={S.label}>{t("newproject.customer")}</label>
           {!inlineNewMode ? (
             <div ref={customerContainerRef}>
               <div style={S.customerInputWrap}>
                 <input
                   type="text"
                   style={S.input}
-                  placeholder="Search or select customer…"
+                  placeholder={t("newproject.searchSelectCustomer")}
                   value={customerSearch}
                   onChange={(e) => {
                     setCustomerSearch(e.target.value);
@@ -405,7 +408,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
                   onFocus={() => setCustomerDropdownOpen(true)}
                 />
                 {selectedCustomerId ? (
-                  <button type="button" style={S.clearBtn} onClick={handleClearCustomer} aria-label="Clear customer">✕</button>
+                  <button type="button" style={S.clearBtn} onClick={handleClearCustomer} aria-label={t("newproject.clearCustomer")}>✕</button>
                 ) : null}
               </div>
               {customerDropdownOpen ? (
@@ -429,18 +432,18 @@ export default function NewProjectScreen({ onBack, onSave }) {
                     style={S.dropdownNewCustomer}
                     onClick={openInlineNew}
                   >
-                    + New Customer
+                    {t("newproject.newCustomer")}
                   </button>
                 </div>
               ) : null}
             </div>
           ) : (
             <div style={S.inlineNewWrap}>
-              <div style={S.inlineNewTitle}>New Customer</div>
+              <div style={S.inlineNewTitle}>{t("newproject.newCustomer2")}</div>
               <input
                 type="text"
                 style={S.input}
-                placeholder="Full name *"
+                placeholder={t("newproject.fullName")}
                 value={inlineName}
                 onChange={(e) => setInlineName(e.target.value)}
                 autoFocus
@@ -448,33 +451,33 @@ export default function NewProjectScreen({ onBack, onSave }) {
               <input
                 type="tel"
                 style={{ ...S.input, marginTop: 8 }}
-                placeholder="Phone (optional)"
+                placeholder={t("newproject.phoneOptional")}
                 value={inlinePhone}
                 onChange={(e) => setInlinePhone(e.target.value)}
               />
               <input
                 type="email"
                 style={{ ...S.input, marginTop: 8 }}
-                placeholder="Email (optional)"
+                placeholder={t("newproject.emailOptional")}
                 value={inlineEmail}
                 onChange={(e) => setInlineEmail(e.target.value)}
               />
               <div style={S.inlineNewActions}>
-                <button type="button" style={S.inlineNewCancel} onClick={cancelInlineNew}>Cancel</button>
+                <button type="button" style={S.inlineNewCancel} onClick={cancelInlineNew}>{t("newproject.cancel2")}</button>
                 <button
                   type="button"
                   style={{ ...S.inlineNewSave, ...(inlineName.trim() ? {} : S.inlineNewSaveDisabled) }}
                   disabled={!inlineName.trim()}
                   onClick={handleInlineCreateCustomer}
                 >
-                  Add Customer
+                  {t("newproject.addCustomer")}
                 </button>
               </div>
             </div>
           )}
         </div>
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
-          <label style={S.label}>Site / Job Address</label>
+          <label style={S.label}>{t("newproject.siteJobAddress")}</label>
           {selectedCustomer && customerAddr ? (
             <div style={S.addrModeRow}>
               <button
@@ -482,21 +485,21 @@ export default function NewProjectScreen({ onBack, onSave }) {
                 style={{ ...S.addrModeBtn, ...(addrSource === "customer" ? S.addrModeBtnActive : {}) }}
                 onClick={handleUseCustomerAddress}
               >
-                Use customer address
+                {t("newproject.useCustomerAddress")}
               </button>
               <button
                 type="button"
                 style={{ ...S.addrModeBtn, ...(addrSource === "custom" ? S.addrModeBtnActive : {}) }}
                 onClick={handleUseDifferentAddress}
               >
-                Different job site
+                {t("newproject.differentJobSite")}
               </button>
             </div>
           ) : null}
           <input
             type="text"
             style={{ ...S.input, ...(addrSource === "customer" ? S.inputDisabled : {}), marginTop: selectedCustomer && customerAddr ? 8 : 0 }}
-            placeholder="Street address"
+            placeholder={t("newproject.streetAddress")}
             value={addrStreet}
             onChange={(e) => { setAddrStreet(e.target.value); addrUserOwnedRef.current = true; setAddrSource("custom"); }}
             disabled={addrSource === "customer"}
@@ -506,7 +509,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
             <input
               type="text"
               style={{ ...S.input, flex: 2, ...(addrSource === "customer" ? S.inputDisabled : {}) }}
-              placeholder="City"
+              placeholder={t("newproject.city")}
               value={addrCity}
               onChange={(e) => { setAddrCity(e.target.value); addrUserOwnedRef.current = true; setAddrSource("custom"); }}
               disabled={addrSource === "customer"}
@@ -519,7 +522,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
               disabled={addrSource === "customer"}
               autoComplete="address-level1"
             >
-              <option value="">State</option>
+              <option value="">{t("newproject.state")}</option>
               {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
             <input
@@ -535,7 +538,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
           </div>
         </div>
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
-          <label style={S.label}>Status</label>
+          <label style={S.label}>{t("newproject.status")}</label>
           <div style={S.statusRow}>
             {PROJECT_STATUS_OPTIONS.map((option) => (
               <button
@@ -544,7 +547,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
                 style={{ ...S.statusOption, ...(status === option.key ? S.statusOptionActive : {}) }}
                 onClick={() => setStatus(option.key)}
               >
-                {option.label}
+                {t(option.labelKey)}
               </button>
             ))}
           </div>
@@ -552,12 +555,12 @@ export default function NewProjectScreen({ onBack, onSave }) {
       </div>
 
       <div style={S.sectionCard}>
-        <div style={S.sectionHeader}>Additional</div>
+        <div style={S.sectionHeader}>{t("newproject.additional")}</div>
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard, marginBottom: 0 }}>
-          <label style={S.label}>Notes <span style={S.optional}>(optional)</span></label>
+          <label style={S.label}>{t("newproject.notes")}<span style={S.optional}>(optional)</span></label>
           <textarea
             style={{ ...S.input, ...S.textarea }}
-            placeholder="Scope notes, special instructions…"
+            placeholder={t("newproject.scopeNotesSpecialInstructions")}
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             rows={3}
@@ -578,7 +581,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
           disabled={!canSave}
           onClick={handleSave}
         >
-          Create Project
+          {t("newproject.createProject")}
         </button>
         <CloudBackupInlineStatus style={{ marginTop: 8, textAlign: "center" }} />
       </div>

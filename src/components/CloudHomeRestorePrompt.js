@@ -4,18 +4,17 @@
 // Gate 13F: a modern, Home-screen cloud recovery prompt so a user signing
 // into a fresh/empty device isn't forced through Settings -> Cloud Backup ->
 // Restore From Cloud to get their work back. Reuses the existing decision
-// hook (useCloudRestorePrompt) and the existing restore/backup functions
-// unchanged -- this component only adds presentation. It never silently
+// hook (useCloudRestorePrompt) and the existing guarded restore functions.
+// It never silently
 // restores or overwrites; the only restore action offered here (empty
 // device) still runs through the same safety checks Advanced Settings
 // already enforces.
 //
 // Gate 13F amendment: when local data already exists, Home no longer offers
 // a restore action at all -- executeSupabaseCloudRestore always rejects that
-// case (LOCAL_NOT_EMPTY) by design, so presenting a "Restore" button there
-// was a predictable dead end. That state now only offers the safe action
-// (back up this device) plus a route to Advanced Settings for anyone who
-// still wants the full manual restore/backup review.
+// case (LOCAL_NOT_EMPTY) by design, so presenting actions there was a
+// predictable dead end. Established-workspace backup is owned exclusively by
+// the automatic targeted mutation worker.
 
 import { useEffect, useRef, useState } from "react";
 import useCloudRestorePrompt, { CLOUD_RESTORE_PROMPT_STATE, SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
@@ -26,11 +25,10 @@ import {
   CLOUD_BACKUP_EXPORT_STATUS,
 } from "../lib/supabaseCloudRestore";
 import {
-  runSupabaseCloudOnboardingBackup,
   removePreservedOlderCloudEstimates,
   CLOUD_ONBOARDING_STATUS,
-  PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS,
-} from "../lib/supabaseCloudOnboarding";
+  PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS } from
+"../lib/supabaseCloudOnboarding";
 import { triggerCloudBackupExportDownload } from "../lib/cloudBackupExportDownload";
 import {
   previewSafeCloudRecovery,
@@ -200,14 +198,14 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   }, []);
 
   useEffect(() => {
-    const canAutoRecover = (
-      state === CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE
-      && restorePreview?.fullyRestorable === true
-      && restoreAvailable
-      && !partialLocalSnapshot
-      && !hasChamberedDraft
-      && !checking
-    );
+    const canAutoRecover = false &&
+    state === CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE &&
+    restorePreview?.fullyRestorable === true &&
+    restoreAvailable &&
+    !partialLocalSnapshot &&
+    !hasChamberedDraft &&
+    !checking;
+
     if (!canAutoRecover || automaticRecoveryStartedRef.current) return undefined;
     automaticRecoveryStartedRef.current = true;
     setRestoring(true);
@@ -299,21 +297,10 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     }
   }, [checking, recheckState, restoreAvailable, missingEstimatePayloadCount]);
 
-  const keepVisibleForRecoveryFlow = Boolean(
-    safeRecoveryResult
-    || continuationResult
-    || completedRecoveryStatus
-    || recoveryPhase !== "idle"
-  );
+  const keepVisibleForRecoveryFlow = false;
 
-  if (dismissed && !keepVisibleForRecoveryFlow) return null;
-  if (
-    state !== CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE
-    && state !== CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS
-    && !keepVisibleForRecoveryFlow
-  ) {
-    return null;
-  }
+  if (dismissed) return null;
+  if (state !== CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE || !restoreAvailable) return null;
   // Once restored, the badge's own "Cloud backup restored." message covers
   // the confirmation -- this card has nothing further to say.
   if (restoreResult?.status === CLOUD_RESTORE_STATUS.RESTORED && !keepVisibleForRecoveryFlow) return null;
@@ -727,38 +714,6 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     setSafeRecoveryPreview(null);
   };
 
-  const runBackup = async () => {
-    setBackingUp(true);
-    setContinuationResult(null);
-    // A local/cloud mismatch can be bidirectional: this device may hold records
-    // the cloud lacks (handled by the backup below) AND the cloud may hold
-    // records this device lacks (imported by automatic convergence). Ask the
-    // automatic hook to attempt convergence too -- never Restore or Replace.
-    if (state === CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS) {
-      requestCloudConvergence();
-    }
-    try {
-      const storedRecoveryStatus = readCloudPartialRecoveryStatus(localStorage);
-      const result = await runSupabaseCloudOnboardingBackup({
-        storageSnapshot: localStorage,
-        configured: isSupabaseReady,
-        user,
-        company,
-        role,
-        preservedSkippedEstimateLegacyIds: Array.isArray(storedRecoveryStatus?.skippedEstimateIds)
-          ? storedRecoveryStatus.skippedEstimateIds
-          : [],
-      });
-      setBackupResult(result);
-      setCompletedRecoveryStatus(readCloudPartialRecoveryStatus(localStorage));
-      refreshCloudStatus();
-    } catch (error) {
-      setBackupResult({ status: CLOUD_ONBOARDING_STATUS.ERROR, error: error?.message });
-    } finally {
-      setBackingUp(false);
-    }
-  };
-
   const heading = showRecoveryFinishedState
     ? "Recovery finished."
     : automaticSafeRepairFailed
@@ -838,17 +793,11 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   } else if (continuationPaused) {
     primaryAction = { id: "retry_continuation", label: "Try Again", onClick: retryRecoveryContinuation, disabled: false };
   } else if (isEmptyDevice && restoreAvailable) {
-    primaryAction = { id: "finish_recovery", label: "Finish Recovery", onClick: requestRestoreConfirmation, disabled: busy };
+    primaryAction = { id: "finish_recovery", label: "Restore Cloud to This Device", onClick: requestRestoreConfirmation, disabled: busy };
   } else if (missingPayloadsBlocked && repairAvailable) {
     primaryAction = { id: "repair_missing_estimate_details", label: "Repair Missing Estimate Details", onClick: requestRepairConfirmation, disabled: busy };
   } else if (missingPayloadsBlocked) {
     primaryAction = { id: "finish_safe_recovery", label: "Finish Recovery", onClick: requestSafeRecovery, disabled: busy };
-  } else if (!isEmptyDevice && !localBackupBlocked) {
-    primaryAction = { id: "back_up_now", label: backingUp ? "Backing up..." : "Back Up Now", onClick: runBackup, disabled: backingUp };
-  } else if (!isEmptyDevice && backupPausedForJobLinks) {
-    primaryAction = { id: "fix_job_links", label: "Fix Estimate Job Links", onClick: navigateToEstimates, disabled: false };
-  } else if (!isEmptyDevice) {
-    primaryAction = { id: "recheck_restore_preview", label: "Try Again", onClick: recheckRestorePreview, disabled: busy };
   } else {
     primaryAction = {
       id: "recheck_restore_preview",
@@ -930,6 +879,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
         ...style,
       }}
     >
+
       <div style={{ fontSize: 14, fontWeight: 800, color: "rgba(230,241,248,0.96)" }}>
         {heading}
       </div>
@@ -968,18 +918,19 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           {restoreErrorMessage(restoreResult)}
         </div>
       ) : null}
-      {backupResult && !showRecoveryFinishedState ? (
-        <div role="status" style={{ fontSize: 12, fontWeight: 700, color: backupResult.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
+      {backupResult && !showRecoveryFinishedState ?
+      <div role="status" style={{ fontSize: 12, fontWeight: 700, color: backupResult.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
           ? "rgba(187,247,208,0.92)"
           : "rgba(253,224,71,0.92)" }}
         >
+
           {backupResult.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
             ? "Backup finished. Your data is backed up."
             : oldDeviceBackupProtectionNeeded
               ? "Some older estimates need the original device to finish backup protection."
             : "Backup is paused because some records need attention."}
-        </div>
-      ) : null}
+        </div> :
+      null}
       {recheckMessage ? (
         <div role="status" style={{ fontSize: 12, fontWeight: 700, color: "rgba(191,219,254,0.92)" }}>
           {recheckMessage}
@@ -1027,17 +978,18 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       ) : null}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {actions.map((action) => (
-          <button
+        {actions.map((action) =>
+        <button
             key={action.id}
             type="button"
             className={action.className}
             disabled={action.disabled}
             onClick={action.onClick || undefined}
           >
+
             {action.label}
           </button>
-        ))}
+        )}
       </div>
       {(showRecoveryFinishedState || continuationPaused || localBackupBlocked || missingPayloadsBlocked || oldDeviceBackupProtectionNeeded || automaticSafeRepairFailed || (isEmptyDevice && !restoreAvailable)) ? (
         <div className="pe-field-helper" style={{ opacity: 0.8 }}>
@@ -1065,6 +1017,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
         onCancel={handleDialogCancel}
         onConfirm={handleDialogConfirm}
       />
-    </div>
-  );
+
+    </div>);
+
 }

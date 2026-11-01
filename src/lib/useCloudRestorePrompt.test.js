@@ -134,6 +134,46 @@ test("treats a chambered draft on an otherwise empty device as local work", () =
   expect(result.current.state).toBe(CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS);
 });
 
+test("mismatch on an established non-empty device never recommends restore", () => {
+  useCloudBackupStatus.mockReturnValue({
+    queueState: { pending: false, status: "clean" },
+    onboardingStatus: {
+      status: "local_cloud_mismatch",
+      preview: { localCounts: { customers: 1, projects: 1, estimates: 1, invoices: 1 } },
+    },
+    restorePreview: null,
+    restorePreviewLoading: false,
+    decision: { screenState: "backup_failed" },
+    refreshCloudStatus: jest.fn(),
+  });
+
+  const { result } = renderHook(() => useCloudRestorePrompt());
+
+  expect(result.current.state).toBe(CLOUD_RESTORE_PROMPT_STATE.NEEDS_ATTENTION);
+  expect(result.current.state).not.toBe(CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS);
+  expect(result.current.state).not.toBe(CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE);
+});
+
+test("generic needs_attention never becomes an established-device restore recommendation", () => {
+  useCloudBackupStatus.mockReturnValue({
+    queueState: { pending: false, status: "needs_attention" },
+    onboardingStatus: {
+      status: "needs_attention",
+      automaticSafeRepair: { attempted: true, failed: true },
+      preview: { localCounts: { customers: 1, projects: 1, estimates: 1, invoices: 1 } },
+    },
+    restorePreview: null,
+    restorePreviewLoading: false,
+    decision: { screenState: "backup_failed" },
+    refreshCloudStatus: jest.fn(),
+  });
+
+  const { result } = renderHook(() => useCloudRestorePrompt());
+
+  expect(result.current.state).toBe(CLOUD_RESTORE_PROMPT_STATE.NEEDS_ATTENTION);
+  expect(result.current.state).not.toBe(CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS);
+});
+
 test("suppresses restore prompt state while a cloud backup is pending", () => {
   useCloudBackupStatus.mockReturnValue({
     queueState: { pending: true },

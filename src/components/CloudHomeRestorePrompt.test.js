@@ -1,6 +1,9 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import CloudHomeRestorePrompt from "./CloudHomeRestorePrompt";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { markCloudBackupDirty, markCloudBackupReviewRequired } from "../lib/cloudBackupQueue";
+import { commitStoredCustomerCollectionMutation } from "../lib/businessCloudMutationOwners";
+import { readCloudMutationLedger } from "../lib/cloudMutationLedger";
+import { runtimeCommitAtomicRecords } from "../lib/vaultRuntimeStore";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import useCloudAutoConvergence from "../lib/useCloudAutoConvergence";
 
@@ -12,6 +15,11 @@ jest.mock("../lib/supabaseCloudConvergence", () => {
     recoverInterruptedCloudConvergence: jest.fn(),
   };
 });
+
+jest.mock("../lib/vaultRuntimeStore", () => ({
+  ...jest.requireActual("../lib/vaultRuntimeStore"),
+  runtimeCommitAtomicRecords: jest.fn(),
+}));
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -62,6 +70,7 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
     NO_CLOUD_DATA: "no_cloud_data",
     ELIGIBLE: "eligible",
     RESTORED: "restored",
+    RECOVERED_UNVERIFIED: "recovered_unverified",
     BLOCKED_UNSUPPORTED_SHAPE: "blocked_unsupported_shape",
     RUN_LOCK_BUSY: "run_lock_busy",
     ERROR: "error",
@@ -192,112 +201,164 @@ function safeRecoveryPreviewFixture(overrides = {}) {
   };
 }
 
-test("automatically hydrates a fully-restorable empty device once without starting a cloud backup", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue({
+// Home recovery contract: automatic empty-device hydration is retired. A
+// fully-restorable empty device is offered ONE explicit, confirmed restore;
+// every other state (blocked preview, pending local work, established
+// workspace) shows no Home recovery console and runs no recovery writer.
+function eligibleRestorePreview(overrides = {}) {
+  return {
     status: CLOUD_RESTORE_STATUS.ELIGIBLE,
     eligible: true,
     partial: false,
     fullyRestorable: true,
     blockers: [],
     notices: [],
+    ...overrides,
+  };
+}
+
+async function confirmExplicitRestore() {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Restore Cloud to This Device" }));
   });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Restore Data" }));
+  });
+}
+
+function expectNoRetiredRecoveryWriters() {
+  expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
+  expect(previewSafeCloudRecovery).not.toHaveBeenCalled();
+  expect(applySafeCloudRecovery).not.toHaveBeenCalled();
+  expect(runRecoveryContinuation).not.toHaveBeenCalled();
+  expect(updateEstimateRestorePayloads).not.toHaveBeenCalled();
+  expect(removePreservedOlderCloudEstimates).not.toHaveBeenCalled();
+  expect(exportSupabaseCloudBackupArtifact).not.toHaveBeenCalled();
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+}
+
+test("a fully-restorable empty device is never hydrated automatically and restores only after explicit confirmation", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(eligibleRestorePreview());
   executeSupabaseCloudRestore.mockResolvedValue({
     status: CLOUD_RESTORE_STATUS.RESTORED,
     restored: true,
     restoredCounts: { customers: 2, projects: 1, estimates: 1, invoices: 1 },
   });
-
-  await renderAndSettle();
-
-  await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
-  expect(executeSupabaseCloudRestore).toHaveBeenCalledWith(expect.objectContaining({
-    configured: true,
-    user: expect.objectContaining({ id: "user_1" }),
-    company: expect.objectContaining({ id: "company_1" }),
-    storage: localStorage,
-  }));
-  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
-});
-
-test("automatic recovery completes after its own restoring rerender and hands convergence off once", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue({
-    status: CLOUD_RESTORE_STATUS.ELIGIBLE,
-    eligible: true,
-    partial: false,
-    fullyRestorable: true,
-    blockers: [],
-    notices: [],
-  });
-  const deferred = createDeferred();
-  executeSupabaseCloudRestore.mockReturnValue(deferred.promise);
   const convergenceRequested = jest.fn();
   window.addEventListener("estipaid:cloud-convergence-request", convergenceRequested);
   try {
     await renderAndSettle();
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeEnabled();
+    expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
+
+    await confirmExplicitRestore();
+
     await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
-    // setRestoring(true) has already rendered the busy state before the
-    // deferred promise settles -- the precise lifecycle that used to cancel
-    // the effect's own completion handlers.
-    expect(screen.getByRole("button", { name: "Finish Recovery" })).toBeDisabled();
-    const onboardingChecksBeforeCompletion = checkSupabaseCloudOnboardingStatus.mock.calls.length;
-
-    await act(async () => {
-      deferred.resolve({ status: CLOUD_RESTORE_STATUS.RESTORED, restored: true });
-      await deferred.promise;
-    });
-
-    await waitFor(() => expect(convergenceRequested).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(checkSupabaseCloudOnboardingStatus.mock.calls.length)
-      .toBeGreaterThan(onboardingChecksBeforeCompletion));
-    expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1);
-    expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+    expect(executeSupabaseCloudRestore).toHaveBeenCalledWith(expect.objectContaining({
+      configured: true,
+      user: expect.objectContaining({ id: "user_1" }),
+      company: expect.objectContaining({ id: "company_1" }),
+      storage: localStorage,
+    }));
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+    // Home never issues its own convergence request; the restore owner's
+    // completion handoff is the only continuation.
+    expect(convergenceRequested).not.toHaveBeenCalled();
   } finally {
     window.removeEventListener("estipaid:cloud-convergence-request", convergenceRequested);
   }
 });
 
-test("automatic recovery clears restoring after a deferred failure while mounted", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue({
-    status: CLOUD_RESTORE_STATUS.ELIGIBLE,
-    eligible: true,
-    partial: false,
-    fullyRestorable: true,
-    blockers: [],
-    notices: [],
-  });
+test("established current sync issue never turns Home recovery into a whole-workspace retry engine", async () => {
+  markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
+  markCloudBackupReviewRequired("Current conflict", { status: "conflict" });
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION });
+
+  await renderAndSettle();
+
+  expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+});
+
+test("an explicit restore disables Home actions while in flight and hides the card once restored", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(eligibleRestorePreview());
   const deferred = createDeferred();
   executeSupabaseCloudRestore.mockReturnValue(deferred.promise);
 
   await renderAndSettle();
-  await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
-  expect(screen.getByRole("button", { name: "Finish Recovery" })).toBeDisabled();
+  await confirmExplicitRestore();
+
+  expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Not now" })).toBeDisabled();
+
+  await act(async () => {
+    deferred.resolve({ status: CLOUD_RESTORE_STATUS.RESTORED, restored: true });
+    await deferred.promise;
+  });
+
+  await waitFor(() => expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument());
+  expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1);
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+});
+
+test("a post-write verification mismatch keeps the explicit restore visible and requests no convergence", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(eligibleRestorePreview());
+  executeSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.RECOVERED_UNVERIFIED,
+    restored: false,
+    localRecoveryApplied: true,
+    error: "Recovery copied data to this device, but cloud verification still needs attention.",
+  });
+  const convergenceRequested = jest.fn();
+  window.addEventListener("estipaid:cloud-convergence-request", convergenceRequested);
+  try {
+    await renderAndSettle();
+    await confirmExplicitRestore();
+
+    await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("cloud-home-restore-prompt")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Recovery copied data to this device, but cloud verification still needs attention.");
+    expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeEnabled();
+    expect(convergenceRequested).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener("estipaid:cloud-convergence-request", convergenceRequested);
+  }
+});
+
+test("an explicit restore failure clears restoring and is never retried on its own", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(eligibleRestorePreview());
+  const deferred = createDeferred();
+  executeSupabaseCloudRestore.mockReturnValue(deferred.promise);
+
+  await renderAndSettle();
+  await confirmExplicitRestore();
+  expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeDisabled();
 
   await act(async () => {
     deferred.reject(new Error("local recovery failed"));
     try { await deferred.promise; } catch {}
   });
 
-  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Restore could not be completed on this device."));
-  expect(screen.getByRole("button", { name: "Finish Recovery" })).toBeEnabled();
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("local recovery failed"));
+  expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeEnabled();
   expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1);
   expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
 });
 
-test("fresh-device recovery owns startup when convergence mounts before its delayed preview, then hands off one convergence after local hydration", async () => {
+test("an empty device keeps recovery ownership while convergence mounts before its delayed preview, and nothing hydrates without consent", async () => {
   const previewDeferred = createDeferred();
   const convergenceRequested = jest.fn();
   window.addEventListener("estipaid:cloud-convergence-request", convergenceRequested);
   try {
     previewSupabaseCloudRestore.mockReturnValue(previewDeferred.promise);
     executeSupabaseCloudRestore.mockImplementation(async () => {
-      // This models the existing restore transaction's local apply before it
-      // returns RESTORED and dispatches its pre-existing handoff event.
+      // Models the restore transaction's local apply before it returns RESTORED.
       localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "customer-restored" }]));
       return { status: CLOUD_RESTORE_STATUS.RESTORED, restored: true };
     });
-    runSupabaseCloudConvergence.mockResolvedValue({ ok: true, status: "matched" });
-    recoverInterruptedCloudConvergence.mockReturnValue({ ok: true, recovered: false });
 
     // The app-level convergence hook mounts first while the fresh-device
     // recovery preview is still unresolved.
@@ -312,76 +373,47 @@ test("fresh-device recovery owns startup when convergence mounts before its dela
 
     await renderAndSettle();
     await act(async () => {
-      previewDeferred.resolve({
-        status: CLOUD_RESTORE_STATUS.ELIGIBLE,
-        eligible: true,
-        partial: false,
-        fullyRestorable: true,
-        blockers: [],
-        notices: [],
-      });
+      previewDeferred.resolve(eligibleRestorePreview());
       await previewDeferred.promise;
     });
 
+    expect(await screen.findByRole("button", { name: "Restore Cloud to This Device" })).toBeEnabled();
+    expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
+    expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+    expect(convergenceRequested).not.toHaveBeenCalled();
+
+    await confirmExplicitRestore();
+
     await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(convergenceRequested).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
-    expect(runSupabaseCloudConvergence).toHaveBeenCalledWith(expect.objectContaining({ storage: localStorage }));
-    expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1);
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
   } finally {
     window.removeEventListener("estipaid:cloud-convergence-request", convergenceRequested);
   }
 });
 
-test("automatic fresh-device recovery retries a transient run lock once at a time and converges only after restore succeeds", async () => {
-  jest.useFakeTimers();
-  const convergenceRequested = jest.fn();
-  const deferredRetry = createDeferred();
-  window.addEventListener("estipaid:cloud-convergence-request", convergenceRequested);
-  try {
-    previewSupabaseCloudRestore.mockResolvedValue({
-      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
-      eligible: true,
-      partial: false,
-      fullyRestorable: true,
-      blockers: [],
-      notices: [],
-    });
-    executeSupabaseCloudRestore
-      .mockResolvedValueOnce({ status: CLOUD_RESTORE_STATUS.RUN_LOCK_BUSY })
-      .mockReturnValueOnce(deferredRetry.promise);
+test("a busy restore run lock is reported and never retried automatically; only the user can try again", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(eligibleRestorePreview());
+  executeSupabaseCloudRestore
+    .mockResolvedValueOnce({
+      status: CLOUD_RESTORE_STATUS.RUN_LOCK_BUSY,
+      error: "Cloud recovery is already running. Please wait for it to finish.",
+      noWritesPerformed: true,
+    })
+    .mockResolvedValueOnce({ status: CLOUD_RESTORE_STATUS.RESTORED, restored: true });
 
-    await renderAndSettle();
-    await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  await renderAndSettle();
+  await confirmExplicitRestore();
 
-    await act(async () => {
-      jest.advanceTimersByTime(250);
-      await Promise.resolve();
-    });
-    expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(2);
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Cloud recovery is already running. Please wait for it to finish."));
+  // Longer than the first retired automatic retry delay (250 ms).
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+  expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1);
 
-    // The second restore remains in flight; advancing past the entire retry
-    // budget cannot start a concurrent third restore.
-    await act(async () => {
-      jest.advanceTimersByTime(10000);
-      await Promise.resolve();
-    });
-    expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(2);
+  await confirmExplicitRestore();
 
-    await act(async () => {
-      deferredRetry.resolve({ status: CLOUD_RESTORE_STATUS.RESTORED, restored: true });
-      await deferredRetry.promise;
-    });
-
-    await waitFor(() => expect(convergenceRequested).toHaveBeenCalledTimes(1));
-    expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(2);
-    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
-  } finally {
-    window.removeEventListener("estipaid:cloud-convergence-request", convergenceRequested);
-    jest.useRealTimers();
-  }
+  await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument());
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
 });
 
 function buildCloudExportArtifact(overrides = {}) {
@@ -509,21 +541,23 @@ beforeEach(() => {
   readCloudPartialRecoveryStatus.mockImplementation((...args) => actualCloudPartialRecoveryStatus.readCloudPartialRecoveryStatus(...args));
 });
 
-test("empty device shows a simple Finish Recovery path when full recovery is available", async () => {
+test("empty device shows the single explicit Restore Cloud to This Device path when full recovery is available", async () => {
   executeSupabaseCloudRestore.mockResolvedValue({ status: CLOUD_RESTORE_STATUS.RESTORED, restored: true });
 
   await renderAndSettle();
 
   expect(screen.getByText("Recovery Available")).toBeInTheDocument();
   expect(screen.getByText("Recover your BVW Contracting Solutions records on this device.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Finish Recovery" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Download Emergency Backup File" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeInTheDocument();
+  ["Finish Recovery", "Try Again", "Download Emergency Backup File", "Repair Missing Estimate Details", "Remove Older Estimates"]
+    .forEach((name) => expect(screen.queryByRole("button", { name })).not.toBeInTheDocument());
 
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restore Cloud to This Device" }));
   });
 
   expect(screen.getByRole("dialog", { name: "Restore cloud data to this device?" })).toBeInTheDocument();
+  expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
 
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Restore Data" }));
@@ -536,395 +570,124 @@ test("empty device shows a simple Finish Recovery path when full recovery is ava
   }));
 });
 
-test("blocked empty-device recovery uses contractor language and Home-owned actions", async () => {
+test.each([
+  ["missing estimate details", () => blockedMissingPayloadPreview(2)],
+  ["a partial cloud backup", () => eligibleRestorePreview({ partial: true, fullyRestorable: false })],
+  ["no cloud data", () => ({ status: CLOUD_RESTORE_STATUS.NO_CLOUD_DATA, eligible: false, partial: false, blockers: [], notices: [] })],
+])("an empty device blocked by %s shows no Home recovery console and runs no recovery writer", async (_label, buildPreview) => {
+  previewSupabaseCloudRestore.mockResolvedValue(buildPreview());
+
+  await renderAndSettle();
+
+  expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+  ["Restore Cloud to This Device", "Finish Recovery", "Try Again", "Download Emergency Backup File", "Repair Missing Estimate Details"]
+    .forEach((name) => expect(screen.queryByRole("button", { name })).not.toBeInTheDocument());
+  expectNoRetiredRecoveryWriters();
+});
+
+test("a blocked preview never repairs cloud estimate details from Home, even with original estimates on this device", async () => {
+  localStorage.setItem("estipaid-estimates-v1", JSON.stringify([{ id: "est_1" }, { id: "est_2" }]));
   previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(2));
+  updateEstimateRestorePayloads.mockResolvedValue({ status: ESTIMATE_PAYLOAD_UPDATE_STATUS.COMPLETED, estimatesUpdated: 2 });
 
   await renderAndSettle();
 
-  expect(screen.getByText("Most of your data can still be recovered safely on this device.")).toBeInTheDocument();
-  expect(screen.getByText("2 older estimates are still kept safely in cloud. They could not be fully rebuilt on this device.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Finish Recovery" })).toBeEnabled();
-  expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Download Emergency Backup File" })).toBeInTheDocument();
-  expect(screen.getByText(/Downloads an emergency backup file\. It does not automatically restore or back up your account\./)).toBeInTheDocument();
-  expect(screen.queryByText(/restore payload/i)).not.toBeInTheDocument();
-  expect(screen.queryByText(/metadata/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Repair Missing Estimate Details" })).not.toBeInTheDocument();
+  expectNoRetiredRecoveryWriters();
 });
 
-test("Finish Recovery runs safe recovery and continuation, then shows the kept-in-cloud completion state", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
-
-  await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
-  });
-
-  expect(previewSafeCloudRecovery).toHaveBeenCalledWith({
-    configured: true,
-    user: { id: "user_1" },
-    company: { id: "company_1", name: "BVW Contracting Solutions" },
-  });
-  expect(screen.getByRole("dialog", { name: "Finish recovery on this device?" })).toBeInTheDocument();
-  expect(screen.getByText("This will recover 4 customers, 2 jobs, 1 estimates, and 2 invoices.")).toBeInTheDocument();
-
-  await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
-  });
-
-  expect(applySafeCloudRecovery).toHaveBeenCalledWith(expect.objectContaining({
-    preview: expect.objectContaining({ status: SAFE_CLOUD_RECOVERY_STATUS.PREVIEWED }),
-    storage: localStorage,
-  }));
-  expect(runRecoveryContinuation).toHaveBeenCalledWith(expect.objectContaining({
-    configured: true,
-    user: { id: "user_1" },
-    company: { id: "company_1", name: "BVW Contracting Solutions" },
-    role: "owner",
-    storage: localStorage,
-    skippedEstimates: 3,
-    skippedEstimateLegacyIds: [],
-    onPhase: expect.any(Function),
-  }));
-
-  await waitFor(() => {
-    expect(screen.getByText("Recovery finished.")).toBeInTheDocument();
-  });
-  expect(screen.getByText("Your data is back on this device.")).toBeInTheDocument();
-  expect(screen.getByText("3 older estimates are still kept safely in cloud. They could not be fully rebuilt on this device.")).toBeInTheDocument();
-  expect(screen.getByText("Use the old device to repair those estimates if needed.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Download Emergency Backup File" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Try Again" })).not.toBeInTheDocument();
-  [
-    "metadata",
-    "payload",
-    "project id",
-    "blockers",
-    "warnings",
-    "mismatch",
-    "cloud-only",
-    "local-only",
-    "JSON",
-  ].forEach((word) => {
-    expect(screen.queryByText(new RegExp(word, "i"))).not.toBeInTheDocument();
-  });
-});
-
-test("Finish Recovery confirmation renders through a portal into document.body and Cancel closes it", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
-
+test("restore confirmation renders through a portal into document.body and Cancel closes it without restoring", async () => {
   const { container } = await renderAndSettle();
 
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restore Cloud to This Device" }));
   });
 
   expect(container.querySelector('[role="dialog"]')).toBeNull();
   expect(document.body.querySelector('[role="dialog"]')).toBeTruthy();
-  expect(screen.getByRole("dialog", { name: "Finish recovery on this device?" })).toBeInTheDocument();
+  expect(screen.getByRole("dialog", { name: "Restore cloud data to this device?" })).toBeInTheDocument();
 
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   });
 
-  expect(screen.queryByRole("dialog", { name: "Finish recovery on this device?" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("dialog", { name: "Restore cloud data to this device?" })).not.toBeInTheDocument();
+  expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
 });
 
-test("Finish Recovery cannot double-submit on a rapid double click", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
+test("restore confirmation cannot double-submit on a rapid double click", async () => {
   const deferred = createDeferred();
-  runRecoveryContinuation.mockReturnValue(deferred.promise);
+  executeSupabaseCloudRestore.mockReturnValue(deferred.promise);
 
   await renderAndSettle();
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restore Cloud to This Device" }));
   });
 
-  const confirmButton = screen.getAllByRole("button", { name: "Finish Recovery" })[1];
+  const confirmButton = screen.getByRole("button", { name: "Restore Data" });
   await act(async () => {
     fireEvent.click(confirmButton);
     fireEvent.click(confirmButton);
   });
 
-  expect(applySafeCloudRecovery).toHaveBeenCalledTimes(1);
-  expect(runRecoveryContinuation).toHaveBeenCalledTimes(1);
+  expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1);
 
   await act(async () => {
-    deferred.resolve({
-      status: RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED,
-      backupRan: true,
-      repairChanged: true,
-      repairs: {},
-      skippedEstimates: 3,
-      olderEstimatesKeptInCloud: true,
-      recoveryStatus: {
-        recoveryMode: "partial_cloud_recovery",
-        status: "finished_with_older_estimates_kept",
-        skippedEstimateCount: 3,
-        skippedEstimateIds: ["est_2", "est_3", "est_4"],
-        skippedReason: "missing_full_estimate_details",
-        recoveredAt: "2026-07-06T01:00:00.000Z",
-        olderEstimatesKeptInCloud: true,
-      },
-    });
+    deferred.resolve({ status: CLOUD_RESTORE_STATUS.RESTORED, restored: true });
     await deferred.promise;
   });
+  expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1);
 });
 
-test("rejected recovery continuation shows a clear error and does not leave the modal stuck", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
-  runRecoveryContinuation.mockRejectedValue(new Error("network timeout"));
+test("a restore refused because this device already has data keeps the overwrite protection visible", async () => {
+  executeSupabaseCloudRestore.mockResolvedValue({ status: CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY, restored: false });
 
   await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
-  });
+  await confirmExplicitRestore();
 
-  await waitFor(() => {
-    expect(screen.getByRole("alert")).toHaveTextContent("Recovery could not continue right now.");
-  });
-  expect(screen.queryByRole("dialog", { name: "Finish recovery on this device?" })).not.toBeInTheDocument();
-
-  fireEvent.click(screen.getByText("Technical details"));
-  expect(screen.getByText("network timeout")).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("This device already has local data. Restore is blocked to prevent overwriting."));
+  expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1);
 });
 
-test("full safe recovery with no skipped estimates still shows the normal backed-up success state", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(1));
-  previewSafeCloudRecovery.mockResolvedValue(safeRecoveryPreviewFixture({ skippedEstimates: 0 }));
-  applySafeCloudRecovery.mockReturnValue({
-    status: SAFE_CLOUD_RECOVERY_STATUS.RECOVERED,
-    error: "",
-    recoveredCounts: { customers: 4, projects: 2, estimates: 1, invoices: 2, invoicePayments: 1 },
-    skippedEstimates: 0,
-    skippedEstimateLegacyIds: [],
-    writeCount: 4,
-    settingsWritten: false,
-  });
-  runRecoveryContinuation.mockResolvedValue({
-    status: RECOVERY_CONTINUATION_STATUS.BACKED_UP,
-    backupRan: true,
-    repairChanged: false,
-    repairs: {},
-    skippedEstimates: 0,
-  });
+test("an unsaved in-progress draft keeps an empty device out of the restore offer", async () => {
+  await renderAndSettle({ hasChamberedDraft: true });
 
-  await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
-  });
-
-  await waitFor(() => {
-    expect(screen.getByText("Recovery finished. Your data is backed up.")).toBeInTheDocument();
-  });
-  expect(screen.queryByText(/older estimates are still kept safely in cloud/i)).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+  expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+  expectNoRetiredRecoveryWriters();
 });
 
-test("paused continuation due to estimate-job links shows Fix Estimate Job Links as the primary action", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
-  runRecoveryContinuation.mockResolvedValue({
-    status: RECOVERY_CONTINUATION_STATUS.PAUSED,
-    backupRan: true,
-    repairChanged: true,
-    repairs: {},
-    skippedEstimates: 3,
-    pausedReason: "Some recovered estimates are not linked to a job.",
-    pausedReasonCode: "estimate_project_missing",
-    technicalDetail: "One or more estimates reference a project id that is not present locally.",
+test("pending mutation-ledger work on an empty device blocks the fresh-device restore offer", async () => {
+  runtimeCommitAtomicRecords.mockImplementation(async (records) => {
+    records.forEach(({ logicalKey, value }) => localStorage.setItem(logicalKey, value));
+    return { ok: true };
   });
-  const dispatchSpy = jest.spyOn(window, "dispatchEvent");
-
-  await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
+  // The contractor deleted their last customer: the device is empty, but that
+  // delete is durable local work the cloud has not acknowledged yet.
+  await commitStoredCustomerCollectionMutation({
+    previousCustomers: [{ id: "customer-deleted", name: "Martinez" }],
+    nextCustomers: [],
+    event: { companyId: "company_1" },
   });
-  await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
-  });
-
-  await waitFor(() => {
-    expect(screen.getByText("Recovery finished, but backup is paused.")).toBeInTheDocument();
-  });
-  expect(screen.getAllByText("Some recovered estimates are not linked to a job.")).toHaveLength(1);
-  expect(screen.getByRole("button", { name: "Fix Estimate Job Links" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Try Again" })).not.toBeInTheDocument();
-
-  fireEvent.click(screen.getByRole("button", { name: "Fix Estimate Job Links" }));
-  expect(dispatchSpy.mock.calls.some((call) => call[0]?.type === "estipaid:navigate-estimates")).toBe(true);
-
-  dispatchSpy.mockRestore();
-});
-
-test("generic paused continuation shows the paused reason once and only one Try Again action", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
-  runRecoveryContinuation.mockResolvedValue({
-    status: RECOVERY_CONTINUATION_STATUS.PAUSED,
-    backupRan: true,
-    repairChanged: false,
-    repairs: null,
-    skippedEstimates: 0,
-    pausedReason: "Backup could not finish yet. Your recovered data is saved on this device.",
-    pausedReasonCode: "needs_attention",
-    technicalDetail: "Cloud verification still needs attention.",
-  });
-
-  await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
-  });
-
-  await waitFor(() => {
-    expect(screen.getByText("Recovery finished, but backup is paused.")).toBeInTheDocument();
-  });
-  expect(screen.getAllByText("Backup could not finish yet. Your recovered data is saved on this device.")).toHaveLength(1);
-  expect(screen.getAllByRole("button", { name: "Try Again" })).toHaveLength(1);
-});
-
-test("real backup failure after recovery still shows Try Again", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
-  runRecoveryContinuation.mockResolvedValue({
-    status: RECOVERY_CONTINUATION_STATUS.ERROR,
-    error: "Backup could not finish. Your recovered data is saved on this device.",
-    technicalDetail: "network timeout",
-  });
-
-  await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
-  });
-
-  await waitFor(() => {
-    expect(screen.getByText("Backup could not finish. Your recovered data is saved on this device.")).toBeInTheDocument();
-  });
-  expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
-});
-
-test("technical details after recovery do not fall back to the restore blocked reason", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(1));
-  runRecoveryContinuation.mockResolvedValue({
-    status: RECOVERY_CONTINUATION_STATUS.PAUSED,
-    backupRan: true,
-    repairChanged: false,
-    repairs: null,
-    skippedEstimates: 0,
-    pausedReason: "Backup could not finish yet. Your recovered data is saved on this device.",
-    pausedReasonCode: "needs_attention",
-    technicalDetail: "Cloud verification still needs attention.",
-  });
-
-  await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
-  });
-
-  await waitFor(() => {
-    expect(screen.getByText("Recovery finished, but backup is paused.")).toBeInTheDocument();
-  });
-  fireEvent.click(screen.getByText("Technical details"));
-  expect(screen.getByText("Cloud verification still needs attention.")).toBeInTheDocument();
-  expect(screen.queryByText("Restore is not available on this device yet.")).not.toBeInTheDocument();
-});
-
-test("repairable missing estimate details can be repaired from Home", async () => {
-  localStorage.setItem("estipaid-estimates-v1", JSON.stringify([{ id: "est_1" }, { id: "est_2" }]));
-  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(2));
-  updateEstimateRestorePayloads.mockResolvedValue({
-    status: ESTIMATE_PAYLOAD_UPDATE_STATUS.COMPLETED,
-    estimatesChecked: 2,
-    estimatesUpdated: 2,
-    noLocalDataChanged: true,
-  });
+  expect(readCloudMutationLedger().entries).toEqual([
+    expect.objectContaining({ entityType: "customer", documentId: "customer-deleted", operation: "delete" }),
+  ]);
 
   await renderAndSettle();
 
-  expect(screen.getByRole("button", { name: "Repair Missing Estimate Details" })).toBeInTheDocument();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Repair Missing Estimate Details" }));
-  });
-  expect(screen.getByRole("dialog", { name: "Repair missing estimate details?" })).toBeInTheDocument();
-
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Repair Estimate Details" }));
-  });
-
-  expect(updateEstimateRestorePayloads).toHaveBeenCalledWith(expect.objectContaining({
-    storageSnapshot: localStorage,
-    configured: true,
-    user: { id: "user_1" },
-    company: { id: "company_1", name: "BVW Contracting Solutions" },
-  }));
-  expect(screen.getByText("Estimate details repaired for 2 estimates. Checking again...")).toBeInTheDocument();
+  expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+  expectNoRetiredRecoveryWriters();
 });
 
-test("Try Again rechecks blocked recovery and can return the simple Finish Recovery state", async () => {
-  previewSupabaseCloudRestore
-    .mockResolvedValueOnce(blockedMissingPayloadPreview(1))
-    .mockResolvedValueOnce({
-      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
-      eligible: true,
-      partial: false,
-      blockers: [],
-      notices: [],
-    });
-
-  await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Try Again" }));
-  });
-
-  await waitFor(() => {
-    expect(previewSupabaseCloudRestore).toHaveBeenCalledTimes(2);
-  });
-  await waitFor(() => {
-    expect(screen.getByText("Check complete. Recovery is ready on this device.")).toBeInTheDocument();
-  });
-  expect(screen.getByRole("button", { name: "Finish Recovery" })).toBeInTheDocument();
-});
-
-test("Download Emergency Backup File downloads the cloud artifact and keeps the copy non-technical", async () => {
-  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(1));
-
-  await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Download Emergency Backup File" }));
-  });
-
-  expect(exportSupabaseCloudBackupArtifact).toHaveBeenCalledWith({
-    configured: true,
-    user: { id: "user_1" },
-    company: { id: "company_1", name: "BVW Contracting Solutions" },
-  });
-  expect(screen.getByText(/Emergency backup file downloaded: estipaid-cloud-backup-/)).toBeInTheDocument();
-  expect(screen.queryByText(/Cloud backup JSON downloaded/i)).not.toBeInTheDocument();
-});
-
-test("local-data-exists state uses Back Up Now as the primary safe action", async () => {
+test("established mismatch does not expose Home as a backup retry engine", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
 
   await renderAndSettle();
 
-  expect(screen.getByText("Backup Available")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Back Up Now" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Finish Recovery" })).not.toBeInTheDocument();
+  expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
 });
 
-test("unknown incomplete cloud estimates show the old-device backup protection state instead of generic backup available copy", async () => {
+test("established mismatch diagnostics do not reopen the retired Home backup path", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({
     status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
     verification: {
@@ -947,13 +710,11 @@ test("unknown incomplete cloud estimates show the old-device backup protection s
 
   await renderAndSettle();
 
-  expect(screen.getByText("Backup needs old device.")).toBeInTheDocument();
-  expect(screen.getByText("Some older estimates need the original device to finish backup protection.")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Back Up Now" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Download Emergency Backup File" })).toBeInTheDocument();
+  expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
 });
 
-test("automatic safe backup repair failure shows contractor-safe retry copy without repair jargon", async () => {
+test("established onboarding failure does not expose Home retry actions", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({
     status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
     preview: {
@@ -982,33 +743,20 @@ test("automatic safe backup repair failure shows contractor-safe retry copy with
 
   await renderAndSettle();
 
-  expect(screen.getByText("Backup needs attention.")).toBeInTheDocument();
-  expect(screen.getByText("We could not finish protecting this device automatically.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Download Emergency Backup File" })).toBeInTheDocument();
-  expect(screen.queryByText("Repair Safe Metadata")).not.toBeInTheDocument();
-  expect(screen.queryByText(/stale project link/i)).not.toBeInTheDocument();
+  expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
 });
 
-test("Back Up Now runs the existing onboarding backup path and reports success plainly", async () => {
+test("established mismatch cannot directly run onboarding backup from Home", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
   runSupabaseCloudOnboardingBackup.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED });
 
   await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Back Up Now" }));
-  });
-
-  expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledWith(expect.objectContaining({
-    configured: true,
-    user: { id: "user_1" },
-    company: { id: "company_1", name: "BVW Contracting Solutions" },
-    role: "owner",
-  }));
-  expect(screen.getByText("Backup finished. Your data is backed up.")).toBeInTheDocument();
+  expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
 });
 
-test("Back Up Now uses stored partial recovery status when retrying a preserved-skipped backup", async () => {
+test("established mismatch never uses preserved recovery metadata to create a Home retry", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
   writePartialRecoveryStatus();
   readCloudPartialRecoveryStatus
@@ -1017,110 +765,23 @@ test("Back Up Now uses stored partial recovery status when retrying a preserved-
   runSupabaseCloudOnboardingBackup.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED });
 
   await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Back Up Now" }));
-  });
-
-  expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledWith(expect.objectContaining({
-    preservedSkippedEstimateLegacyIds: ["est_2", "est_3", "est_4"],
-  }));
+  expect(screen.queryByRole("button", { name: "Back Up Now" })).not.toBeInTheDocument();
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
 });
 
-test("hydrates completed recovery status from localStorage on mount", async () => {
-  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
+test.each([
+  CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
+  CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP,
+])("stored partial-recovery completion on an established %s workspace exposes no retired completion or cleanup UI", async (status) => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status });
   writePartialRecoveryStatus();
 
   await renderAndSettle();
 
-  expect(screen.getByText("Recovery finished.")).toBeInTheDocument();
-  expect(screen.getByText("Your data is back on this device.")).toBeInTheDocument();
-  expect(screen.getByText("3 older estimates are still kept safely in cloud. They could not be fully rebuilt on this device.")).toBeInTheDocument();
-  expect(screen.queryByText("Backup Available")).not.toBeInTheDocument();
-});
-
-test("completed recovery state offers Remove Older Estimates with a required confirmation checkbox", async () => {
-  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
-  writePartialRecoveryStatus();
-
-  await renderAndSettle();
-
-  expect(screen.getByRole("button", { name: "Remove Older Estimates" })).toBeInTheDocument();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Remove Older Estimates" }));
-  });
-
-  expect(screen.getByRole("dialog", { name: "Remove 3 older estimates from cloud backup?" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Remove 3 Older Estimates" })).toBeDisabled();
-
-  await act(async () => {
-    fireEvent.click(screen.getByLabelText("I understand these 3 older estimates will be removed from cloud backup."));
-  });
-  expect(screen.getByRole("button", { name: "Remove 3 Older Estimates" })).toBeEnabled();
-});
-
-test("Remove Older Estimates calls the scoped cleanup helper and clears the finished recovery card", async () => {
-  checkSupabaseCloudOnboardingStatus
-    .mockResolvedValueOnce({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH })
-    .mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP });
-  writePartialRecoveryStatus();
-  removePreservedOlderCloudEstimates.mockImplementation(async ({ storageSnapshot }) => {
-    localStorage.removeItem(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS);
-    return {
-      status: PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.COMPLETED,
-      clearedPartialRecoveryStatus: true,
-      verification: { allMatched: true },
-    };
-  });
-
-  await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Remove Older Estimates" }));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getByLabelText("I understand these 3 older estimates will be removed from cloud backup."));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Remove 3 Older Estimates" }));
-  });
-
-  expect(removePreservedOlderCloudEstimates).toHaveBeenCalledWith(expect.objectContaining({
-    storageSnapshot: localStorage,
-    configured: true,
-    user: { id: "user_1" },
-    company: { id: "company_1", name: "BVW Contracting Solutions" },
-    role: "owner",
-  }));
-  await waitFor(() => {
-    expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
-  });
-});
-
-test("cleanup refusal shows contractor-safe copy, Try Again, and technical detail", async () => {
-  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
-  writePartialRecoveryStatus();
-  removePreservedOlderCloudEstimates.mockResolvedValue({
-    status: PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.REFUSED,
-    error: "We could not safely remove those older estimates automatically.",
-    technicalDetail: "One or more cloud invoices still reference those preserved older estimates.",
-  });
-
-  await renderAndSettle();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Remove Older Estimates" }));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getByLabelText("I understand these 3 older estimates will be removed from cloud backup."));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Remove 3 Older Estimates" }));
-  });
-
-  await waitFor(() => {
-    expect(screen.getByRole("alert")).toHaveTextContent("We could not safely remove those older estimates automatically.");
-  });
-  expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
-  fireEvent.click(screen.getByText("Technical details"));
-  expect(screen.getByText("One or more cloud invoices still reference those preserved older estimates.")).toBeInTheDocument();
+  expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+  expect(screen.queryByText("Recovery finished.")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Remove Older Estimates" })).not.toBeInTheDocument();
+  expectNoRetiredRecoveryWriters();
 });
 
 test("does not show a restore prompt while local has unbacked pending changes", async () => {
@@ -1138,7 +799,7 @@ test("Not now dismisses the prompt", async () => {
   expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
 });
 
-test("a local/cloud mismatch backup also requests automatic convergence (not restore/replace)", async () => {
+test("a local/cloud mismatch stays out of Home execution paths", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
   runSupabaseCloudOnboardingBackup.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED, noWritesPerformed: false });
   const requestSeen = jest.fn();
@@ -1146,11 +807,9 @@ test("a local/cloud mismatch backup also requests automatic convergence (not res
   window.addEventListener("estipaid:cloud-convergence-request", requestSeen);
   try {
     await renderAndSettle();
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back Up Now" }));
-    });
-    expect(requestSeen).toHaveBeenCalledTimes(1);
-    // It never invokes manual Restore/Replace.
+    expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+    expect(requestSeen).not.toHaveBeenCalled();
+    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
     expect(executeSupabaseCloudRestore.mock.calls.length).toBe(restoreBefore);
   } finally {
     window.removeEventListener("estipaid:cloud-convergence-request", requestSeen);

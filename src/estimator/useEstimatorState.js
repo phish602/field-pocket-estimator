@@ -220,9 +220,11 @@ export function useEstimatorState(options = {}) {
           writeLocalStorageDraft(serialized);
           lastSerializedRef.current = serialized;
 
-          // Keep in-memory meta in sync (only if it actually changed)
+          // Keep in-memory meta in sync (only if it actually changed). Only the
+          // meta changes: the stripped copy is for the draft, and applying it to
+          // the open builder would erase an invoice's scope and trade insert.
           if (Number(state?.meta?.lastSavedAt || 0) !== Number(next.meta.lastSavedAt || 0)) {
-            setState(next);
+            setState({ ...state, meta: { ...(state?.meta || {}), lastSavedAt: next.meta.lastSavedAt } });
           }
         } catch {}
       }, 350);
@@ -370,15 +372,20 @@ export function useEstimatorState(options = {}) {
     });
   };
 
+  // Returns the persistence copy (invoice scope and trade insert stripped), which
+  // is what the draft stores. The open builder keeps its full state and only
+  // receives the new meta, so a later save in the same session still has the
+  // invoice's Scope of Work.
   const saveNow = (metaPatch = null, saveOptions = null) => {
     try {
-      const next = stripInternalNotesForPersistence(state);
       const extraMeta = metaPatch && typeof metaPatch === "object" ? metaPatch : {};
       const persistOverride = saveOptions && typeof saveOptions === "object"
         ? saveOptions.persistDraft
         : undefined;
       const shouldPersistDraft = persistOverride === undefined ? persistDraft : persistOverride !== false;
-      next.meta = { ...(next.meta || {}), ...extraMeta, lastSavedAt: Date.now() };
+      const live = { ...(state || {}) };
+      live.meta = { ...(live.meta || {}), ...extraMeta, lastSavedAt: Date.now() };
+      const next = stripInternalNotesForPersistence(live);
       const serialized = JSON.stringify(next);
       if (shouldPersistDraft) {
         saveThroughSwitchingService(next, {
@@ -388,7 +395,7 @@ export function useEstimatorState(options = {}) {
         writeLocalStorageDraft(serialized);
         lastSerializedRef.current = serialized;
       }
-      setState(next);
+      setState(live);
       return next;
     } catch {
       return null;

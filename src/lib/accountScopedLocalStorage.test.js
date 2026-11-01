@@ -470,7 +470,11 @@ describe("global window.localStorage compatibility boundary", () => {
     expect(result.storage.removeVaultMigrationItem(STORAGE_KEYS.CUSTOMERS)).toBe(false);
     expect(result.storage.setVaultCompatibilityGuardValue('{"version":1,"state":"other"}')).toBeNull();
     expect(result.storage.setVaultCompatibilityGuardValue('{"version":1,"state":"transition"}')).toBe('{"version":1,"state":"transition"}');
-    expect(result.storage.setItem(STORAGE_KEYS.CUSTOMERS, "blocked")).toBeUndefined();
+    // A blocked business write must FAIL LOUDLY. Returning undefined here told
+    // the caller the save succeeded while the value was discarded.
+    expect(() => result.storage.setItem(STORAGE_KEYS.CUSTOMERS, "blocked"))
+      .toThrow(expect.objectContaining({ code: "vault_mutation_not_ready" }));
+    expect(localStorage.getItem(`${result.namespace}:${STORAGE_KEYS.CUSTOMERS}`)).toBe("scoped-only");
     expect(result.storage.setVaultCompatibilityGuardValue('{"version":1,"state":"authoritative"}')).toBe('{"version":1,"state":"authoritative"}');
     expect(result.storage.removeVaultMigrationItem(STORAGE_KEYS.CUSTOMERS)).toBe(true);
     deactivateAccountScopedLocalStorage();

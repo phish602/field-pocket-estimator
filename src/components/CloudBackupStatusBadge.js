@@ -10,14 +10,14 @@
 // the same hook but its own compact chip markup/copy -- see
 // ProjectDetailScreen.js's renderBackupChip.
 
-import useCloudBackupStatus from "../lib/useCloudBackupStatus";
+import useCloudBackupStatus, { CLOUD_PRODUCT_STATE } from "../lib/useCloudBackupStatus";
+import { useLanguage } from "../lib/i18n";
 
 export default function CloudBackupStatusBadge({ style } = {}) {
-  const { isSupabaseReady, hasCompany, userEmail, displayState, restoredRecently, queueState, chipState } = useCloudBackupStatus();
+  const { isSupabaseReady, hasCompany, userEmail, productState, productStatus } = useCloudBackupStatus();
+  const { t } = useLanguage();
 
   if (!isSupabaseReady || !userEmail || !hasCompany) return null;
-  if (displayState === "none" && !restoredRecently) return null;
-
   return (
     <div
       role="status"
@@ -37,30 +37,28 @@ export default function CloudBackupStatusBadge({ style } = {}) {
         ...style,
       }}
     >
-      {restoredRecently ? (
-        <div style={{ color: "rgba(187,247,208,0.95)" }}>Cloud backup restored.</div>
-      ) : displayState === "running" ? (
-        <div style={{ color: "rgba(99,179,237,0.92)" }}>Backing up changes...</div>
-      ) : displayState === "failed" ? (
+      {productState === CLOUD_PRODUCT_STATE.SYNCING ? (
+        <div style={{ color: "rgba(99,179,237,0.92)" }}>{t("cloud.backingUpChanges")}</div>
+      ) : productState === CLOUD_PRODUCT_STATE.SYNC_ISSUE ? (
         <>
           <div style={{ color: "rgba(253,224,71,0.95)" }}>
-            {queueState?.status === "conflict" ? "Cloud sync conflict" : chipState === "local_cloud_mismatch" ? "Cloud changed elsewhere" : "Sync needs attention"}
+            {t("cloud.syncNeedsAttention")}
           </div>
           <div style={{ fontWeight: 500, opacity: 0.75 }}>
-            {queueState?.status === "remote_changed" || queueState?.status === "conflict"
-              ? "Cloud contains records that require review. EstiPaid will not overwrite or delete them automatically."
-              : chipState === "local_cloud_mismatch"
-                ? "Cloud data differs from this device and needs review."
-                : "Your changes are safe. EstiPaid is retrying cloud sync."}
+            {t("cloud.inlineNeedsAttention")}
           </div>
         </>
-      ) : displayState === "pending" ? (
+      ) : productState === CLOUD_PRODUCT_STATE.PENDING ? (
         <>
-          <div>{queueState?.status === "offline_pending" ? "Waiting for connection" : queueState?.status === "retry_wait" ? "Cloud sync retrying" : "Cloud sync pending"}</div>
-          <div style={{ fontWeight: 500, opacity: 0.75 }}>{queueState?.status === "offline_pending" ? "Your changes are saved on this device. Sync will continue when you’re back online." : "Your changes are saved on this device and will sync automatically."}</div>
+          <div>{productStatus.pendingReason === "offline" ? t("cloud.waitingForConnection") : productStatus.pendingReason === "retry" ? t("cloud.syncRetrying") : t("cloud.syncPending")}</div>
+          <div style={{ fontWeight: 500, opacity: 0.75 }}>{productStatus.pendingReason === "offline" ? t("cloud.savedOfflineWillContinue") : t("cloud.savedWillSyncAutomatically")}</div>
         </>
+      ) : productState === CLOUD_PRODUCT_STATE.RESTORE_AVAILABLE ? (
+        <div style={{ color: "rgba(99,179,237,0.92)" }}>{t("cloud.restore")}</div>
+      ) : productState === CLOUD_PRODUCT_STATE.CLOUD_CONNECTED ? (
+        <div style={{ color: "rgba(187,247,208,0.9)" }}>{t("cloud.connected")}</div>
       ) : (
-        <div style={{ color: "rgba(187,247,208,0.95)" }}>Cloud backup is up to date.</div>
+        <div style={{ color: "rgba(187,247,208,0.95)" }}>{t("cloud.backupUpToDate")}</div>
       )}
     </div>
   );

@@ -6,10 +6,7 @@ import { STORAGE_KEYS } from "../constants/storageKeys";
 import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
 import { tryAcquireCloudOperationRunLock, releaseCloudOperationRunLock } from "./cloudOperationRunLock";
 import {
-  markCloudBackupDirty,
   readCloudBackupQueueState,
-  CLOUD_BACKUP_SEVERITY,
-  CLOUD_BACKUP_PRIORITY,
 } from "./cloudBackupQueue";
 import { STALE_INVOICE_LINE_ITEM_PLACEHOLDER_REPAIR } from "./supabaseCloudVerification";
 import {
@@ -18,10 +15,18 @@ import {
 } from "./cloudOperationOwnership";
 import {
   runSupabaseCloudConvergence,
+  canVerifyHistoricalWorkspaceResidue,
   recoverInterruptedCloudConvergence,
   recordCloudConvergenceResult,
   CLOUD_CONVERGENCE_REQUEST_EVENT,
 } from "./supabaseCloudConvergence";
+import { getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
+import {
+  appendCloudMutationsDurably,
+  CLOUD_MUTATION_ENTITY,
+  CLOUD_MUTATION_OPERATION,
+  readCloudMutationLedger,
+} from "./cloudMutationLedger";
 
 // Bounded automatic retry for TEMPORARY failures only (never conflicts, deletion
 // ambiguity, malformed cloud data, or critical rollback failures).
@@ -49,7 +54,7 @@ function online() { try { return typeof navigator === "undefined" || navigator.o
 function resolveLocalOperationOwner(storage) {
   try {
     const { snapshot } = buildLocalSnapshotFromStorage(storage);
-    return resolveOperationOwnerFromSnapshot({ snapshot, queueState: readCloudBackupQueueState() });
+    return resolveOperationOwnerFromSnapshot({ snapshot, queueState: readCloudBackupQueueState(), mutationLedger: readCloudMutationLedger() });
   } catch {
     // A malformed/unreadable local snapshot must retain the established safe
     // convergence behavior rather than silently suppressing recovery checks.
@@ -67,29 +72,31 @@ export const STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON = "stale_invoice_line_i
 // mismatch is the repairable blank-invoice-child class, the only action taken
 // here is enqueuing existing backup work, exactly as a normal user edit would.
 // Returns true when a queue entry was created.
-export function requestStaleInvoiceLineItemRepairBackup(result) {
+export async function requestStaleInvoiceLineItemRepairBackup(result, { companyId = "", storage = localStorage } = {}) {
   const mismatch = result?.mismatch;
   if (result?.status !== "mismatch" || result?.code !== "verification_mismatch") return false;
   if (mismatch?.repairableMismatchOnly !== true) return false;
   const repairTypes = Array.isArray(mismatch?.repairTypes) ? mismatch.repairTypes : [];
   if (!repairTypes.includes(STALE_INVOICE_LINE_ITEM_PLACEHOLDER_REPAIR)) return false;
-  // Loop protection via the EXISTING queue: if a generation carrying this exact
-  // repair reason is still pending, the worker has not drained it yet and a
-  // second identical request would only churn the queue revision.
-  try {
-    const queue = readCloudBackupQueueState();
-    if (queue?.pending && Array.isArray(queue?.reasons)
-      && queue.reasons.includes(STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON)) {
-      return false;
-    }
-  } catch { return false; }
-  markCloudBackupDirty({
-    reason: STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON,
-    domains: ["invoices", "invoice_line_items"],
-    severity: CLOUD_BACKUP_SEVERITY.MONEY_CRITICAL,
-    priority: CLOUD_BACKUP_PRIORITY.IMMEDIATE,
-    source: "cloud_convergence_repairable_mismatch",
+  const ids = [...new Set((Array.isArray(mismatch?.repairDocumentIds) ? mismatch.repairDocumentIds : []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!ids.length) return false;
+  const { snapshot } = buildLocalSnapshotFromStorage(storage);
+  const invoices = new Map((Array.isArray(snapshot?.invoices) ? snapshot.invoices : []).map((invoice) => [String(invoice?.id || "").trim(), invoice]));
+  const mutations = ids.flatMap((documentId) => {
+    const invoice = invoices.get(documentId);
+    if (!invoice) return [];
+    return [{
+      companyId: String(companyId || "").trim(),
+      entityType: CLOUD_MUTATION_ENTITY.INVOICE,
+      documentId,
+      operation: CLOUD_MUTATION_OPERATION.UPSERT,
+      reason: STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON,
+      source: "cloud_convergence_repairable_mismatch",
+      payload: JSON.parse(JSON.stringify(invoice)),
+    }];
   });
+  if (mutations.length !== ids.length) return false;
+  await appendCloudMutationsDurably(mutations);
   return true;
 }
 
@@ -211,7 +218,12 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
 
         // Recover an interrupted journal BEFORE acting; a failed recovery is a
         // critical (non-retryable) local-recovery situation, not a transient skip.
-        const recovered = recoverInterruptedCloudConvergence({ storage: localStorage });
+        const recovered = recoverInterruptedCloudConvergence({
+          storage: localStorage,
+          companyId: cmp.id,
+          userId: usr.id,
+          deviceId: getOrCreateLocalDeviceId(localStorage),
+        });
         if (!recovered.ok) { record({ status: "critical", code: recovered.code || "unresolved_journal", stage: "journal_recovery", retryable: false }); return; }
         if (disposed) return;
 
@@ -220,7 +232,8 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
         // after journal recovery on purpose -- the backup worker refuses to run
         // while an unresolved convergence journal exists, so yielding any earlier
         // would leave that journal with nobody to recover it.
-        if (operationOwner === CLOUD_OPERATION_OWNER.BACKUP) {
+        const historicalResidueOnly = canVerifyHistoricalWorkspaceResidue({ storage: localStorage, companyId: cmp.id });
+        if (operationOwner === CLOUD_OPERATION_OWNER.BACKUP && !historicalResidueOnly) {
           record({ status: "skipped", code: "local_backup_pending", stage: "operation_ownership", retryable: true });
           scheduleRetry(); return;
         }
@@ -234,7 +247,10 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
           scheduleRetry(); return;
         }
         try {
-          const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: cfg, user: usr, company: cmp });
+          // This narrow branch performs fresh READS only until an exact match
+          // proves retirement safe. It never imports business data or uploads.
+          const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: cfg, user: usr, company: cmp,
+            ...(historicalResidueOnly ? { reconcileHistoricalResidueOnly: true } : {}) });
           if (disposed) return;
           lastKeyRef.current = `${result?.status}:${result?.code || ""}`;
           recordCloudConvergenceResult({ ...result, attempt: retryCountRef.current });
@@ -244,7 +260,7 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
             // A settled cycle re-arms the repair bridge, so a genuinely new
             // repairable mismatch later can still queue exactly one request.
             repairQueuedRef.current = false;
-          } else if (!repairQueuedRef.current && requestStaleInvoiceLineItemRepairBackup(result)) {
+          } else if (!repairQueuedRef.current && await requestStaleInvoiceLineItemRepairBackup(result, { companyId: cmp.id, storage: localStorage })) {
             // One queue entry per repair cycle. The existing auto-backup worker
             // picks it up and runs the existing writer + server repair path.
             repairQueuedRef.current = true;
@@ -314,6 +330,17 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
     const onPageShow = () => schedulePassiveFresh();
     const onOnline = () => scheduleBypassFresh();
     const onExplicitRequest = () => scheduleBypassFresh();
+    // A backup attempt can classify its pending generation as `remote_changed`
+    // after this hook has already yielded to BACKUP. Queue writes already publish
+    // this app-local event; consume that terminal transition directly rather than
+    // waiting for a focus/reload after the bounded pending-backup retry budget.
+    // The next scan still asks the shared ownership rule, so ordinary pending
+    // writes, true conflicts, and empty-device deletion safety stay unchanged.
+    const onCloudBackupQueueChanged = (event) => {
+      if (event?.detail?.key !== STORAGE_KEYS.CLOUD_BACKUP_QUEUE) return;
+      if (String(readCloudBackupQueueState()?.status || "") !== "remote_changed") return;
+      scheduleBypassFresh();
+    };
     const onVisibility = () => { if (typeof document === "undefined" || document.visibilityState === "visible") schedulePassiveFresh(); };
 
     // Run on mount / whenever the device lock becomes ready + active.
@@ -324,6 +351,7 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
       window.addEventListener("pageshow", onPageShow);
       window.addEventListener("online", onOnline);
       window.addEventListener(CLOUD_CONVERGENCE_REQUEST_EVENT, onExplicitRequest);
+      window.addEventListener("pe-localstorage", onCloudBackupQueueChanged);
       if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
         document.addEventListener("visibilitychange", onVisibility);
       }
@@ -337,6 +365,7 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
         window.removeEventListener("pageshow", onPageShow);
         window.removeEventListener("online", onOnline);
         window.removeEventListener(CLOUD_CONVERGENCE_REQUEST_EVENT, onExplicitRequest);
+        window.removeEventListener("pe-localstorage", onCloudBackupQueueChanged);
         if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
           document.removeEventListener("visibilitychange", onVisibility);
         }
