@@ -46,6 +46,7 @@ import {
   CLOUD_MUTATION_AUTO_RECOVERY_COOLDOWN_MS,
   getCloudMutationLedgerSummary,
   getCloudMutationAutomaticRecoveryProof,
+  enqueueRecoverableMissingParentMutations,
   getHistoricalMutationRecoveryContext,
   getNextCloudMutation,
   markCloudMutationSyncing,
@@ -693,6 +694,18 @@ export default function useCloudAutoBackup({
         () => reconcileSupersededParentMissingMutations({ recoveryContext })
       );
       if (!retired.ok || disposed) return false;
+      // A dependent waiting on a parent the ledger will never send gets that
+      // parent queued from this workspace's own records. The worker sends it
+      // first; its verified acknowledgement is what the proof below accepts.
+      const parents = await commitLedgerStage(
+        LEDGER_STAGE.AUTOMATIC_RECOVERY,
+        () => enqueueRecoverableMissingParentMutations({ recoveryContext, companyId: params.company?.id })
+      );
+      if (!parents.ok || disposed) return false;
+      if (parents.result?.appended?.length) {
+        attemptNowIfSafe();
+        return true;
+      }
       const ledger = readCloudMutationLedger();
       const failed = ledger.entries.find(entry => getCloudMutationAutomaticRecoveryProof(entry, ledger, recoveryContext));
       if (!failed) return false;
