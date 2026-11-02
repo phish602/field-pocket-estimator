@@ -40,8 +40,10 @@ function normalizeLongTextLine(value) {
     .trim();
 }
 
+const LIST_MARKER_PATTERN = /^(([-*•\u2013\u2014])\s+|\(?\d{1,3}[.)]\s+|[a-zA-Z][.)]\s+)/;
+
 function isStructuredListLine(value) {
-  return /^(([-*•\u2013\u2014])\s+|\(?\d{1,3}[.)]\s+|[a-zA-Z][.)]\s+)/.test(String(value || "").trim());
+  return LIST_MARKER_PATTERN.test(String(value || "").trim());
 }
 
 function splitParagraphSentences(value) {
@@ -962,24 +964,32 @@ export function buildPdfDoc(payload) {
   const META_ROW_HEIGHT = META_BOX_HEIGHT / 2;
   const MATERIAL_TITLE_BAND_HEIGHT = 7.2;
   const MATERIAL_HEADER_GAP = 1.2;
-  const TERMS_BOX_MIN_GAP = 4.6;
   const TERMS_BOX_LEFT = LEFT;
   const TERMS_BOX_PADDING_X = 3.2;
   const TERMS_BOX_TOP_PADDING = 1.6;
-  const TERMS_BOX_BOTTOM_PADDING = 1.8;
   const TERMS_BOX_HEADER_BAND_HEIGHT = 5.8;
-  const TERMS_BOX_BODY_TOP_GAP = 1.2;
   const TERMS_BOX_PAGE_TOP = HEADER_SAFE_BOTTOM_Y;
   const TERMS_HEADER_TEXT = "TERMS & CONDITIONS";
   const TERMS_HEADER_FONT_SIZE = 7.1;
   const TERMS_BODY_FONT_SIZE = 9.85;
   const TERMS_LINE_HEIGHT_FACTOR = 1.16;
-  const INVOICE_NOTES_BOX_GAP = 3.6;
-  const INVOICE_NOTES_HEADER_TEXT = "ADDITIONAL NOTES";
-  const ESTIMATE_NOTES_BOX_GAP = 4.8;
-  const ESTIMATE_NOTES_HEADER_TEXT = "ADDITIONAL NOTES";
+  const ADDITIONAL_NOTES_HEADER_TEXT = "ADDITIONAL NOTES";
+  const NOTES_CONDITIONS_HEADER_TEXT = "NOTES & CONDITIONS";
+  const TERMS_SUBHEADING_TEXT = "Terms & Conditions";
+  const ADDITIONAL_NOTES_SUBHEADING_TEXT = "Additional Notes";
   const ESTIMATE_NOTES_BODY_FONT_SIZE = 9.4;
   const ESTIMATE_NOTES_LINE_HEIGHT_FACTOR = 1.18;
+  // Notes panel: a left column beside the totals that widens to full width below them.
+  const NOTES_PANEL_RIGHT = RIGHT;
+  const NOTES_TOTALS_GAP = 4.5;
+  const NOTES_PANEL_BODY_TOP_GAP = 1.8;
+  const NOTES_LIST_INDENT = 2.8;
+  const NOTES_PANEL_BOTTOM_PADDING = 2.2;
+  const NOTES_PANEL_STEP_CLEARANCE = 1.6;
+  const NOTES_PARAGRAPH_GAP_LINES = 0.6;
+  const NOTES_SECTION_GAP_LINES = 0.7;
+  // Readable floor for fitting the panel on its page; below it, the panel paginates instead.
+  const NOTES_MIN_BODY_FONT_SIZE = 8.8;
   const sectionTextWidth = Math.max(60, pageWidth - LEFT - RIGHT_GUTTER - 4.5);
   const footerTextWidth = RIGHT - LEFT - 14;
 
@@ -1152,7 +1162,6 @@ export function buildPdfDoc(payload) {
     metaBoxX + estimateCellWidth + (dateCellWidth / 2),
     metaBoxX + estimateCellWidth + dateCellWidth + (poCellWidth / 2),
   ];
-  const TERMS_BOX_WIDTH = Math.max(contentRightEdge - LEFT + 2, RIGHT - LEFT + 2);
   const documentTypeLabelY = 10.8;
   const labelCenterY = META_Y + (META_ROW_HEIGHT / 2) + 0.05;
   const valueCenterY = META_Y + META_ROW_HEIGHT + (META_ROW_HEIGHT / 2) + 0.05;
@@ -1164,85 +1173,216 @@ export function buildPdfDoc(payload) {
     doc.setTextColor(...textColor);
   }
 
-  function renderPaginatedTextPanel({
-    startPage,
-    startY,
-    gap,
-    headerText,
-    text,
-    bodyFontSize,
-    lineHeightFactor,
-  }) {
-    const normalizedText = formatLongFormPdfText(text);
-    if (!normalizedText) return { page: startPage, bottomY: startY };
+  const NOTES_PANEL_NARROW_RIGHT = TOTALS_X - NOTES_TOTALS_GAP;
+  const NOTES_TEXT_LEFT = TERMS_BOX_LEFT + TERMS_BOX_PADDING_X;
 
-    const panelWidth = TERMS_BOX_WIDTH;
-    const textWidth = panelWidth - (TERMS_BOX_PADDING_X * 2);
-    applyPdfTextStyle("normal", bodyFontSize);
-    const lines = splitText(doc, normalizedText, textWidth);
-    const safeLines = lines.length ? lines : [normalizedText];
-    const lineHeight = (bodyFontSize * lineHeightFactor) / doc.internal.scaleFactor;
-    const bodyStartOffset = TERMS_BOX_HEADER_BAND_HEIGHT + TERMS_BOX_BODY_TOP_GAP + 2.2;
-    const fixedHeight = bodyStartOffset + TERMS_BOX_BOTTOM_PADDING;
-    let page = Math.max(1, Number(startPage || doc.getNumberOfPages()));
-    let panelY = Math.max(TERMS_BOX_PAGE_TOP, Number(startY || 0) + Number(gap || 0));
-    let lineIndex = 0;
-    let bottomY = panelY;
-    let continued = false;
+  // Splits panel sections into wrap units in reading order: optional subheadings, then one unit
+  // per source line, keeping list markers for hanging indents and paragraph breaks as gaps.
+  function buildNotesPanelUnits(sections) {
+    const showSubheadings = sections.length > 1;
+    const units = [];
+    sections.forEach((section, sectionIndex) => {
+      if (showSubheadings) {
+        units.push({
+          fontStyle: "bold",
+          marker: "",
+          words: section.subheading.split(" "),
+          gapBeforeLines: sectionIndex ? NOTES_SECTION_GAP_LINES : 0,
+        });
+      }
+      formatLongFormPdfText(section.text).split(/\n{2,}/).forEach((paragraph, paragraphIndex) => {
+        paragraph.split("\n").map((line) => line.trim()).filter(Boolean).forEach((line, lineIndex) => {
+          const marker = (line.match(LIST_MARKER_PATTERN) || [""])[0];
+          units.push({
+            fontStyle: "normal",
+            marker: marker.trim(),
+            words: line.slice(marker.length).split(" ").filter(Boolean),
+            gapBeforeLines: paragraphIndex && !lineIndex ? NOTES_PARAGRAPH_GAP_LINES : 0,
+          });
+        });
+      });
+    });
+    return units;
+  }
 
-    while (lineIndex < safeLines.length) {
-      doc.setPage(page);
-      // Keep the panel header with at least two body lines (or all of a shorter remainder).
-      const minimumPanelHeight = fixedHeight + (lineHeight * Math.min(2, safeLines.length - lineIndex));
-      if (panelY + minimumPanelHeight > footerSafeTopY) {
-        doc.addPage();
-        page = doc.getNumberOfPages();
-        panelY = TERMS_BOX_PAGE_TOP;
-        continued = lineIndex > 0;
+  // Longest prefix of an unbreakable word that fits, preferring to break after URL/path
+  // punctuation in its second half. Always at least one character, so wrapping progresses.
+  function fitWordPrefixLength(word, width) {
+    let length = 1;
+    while (length < word.length && doc.getTextWidth(word.slice(0, length + 1)) <= width) length += 1;
+    if (length >= word.length) return length;
+    for (let index = length; index > Math.ceil(length / 2); index -= 1) {
+      if (/[/\-_.?&=#:,;]/.test(word[index - 1])) return index;
+    }
+    return length;
+  }
+
+  // Takes one line of a unit's words from the cursor at the current font; words wider than
+  // the line are split across lines rather than overflowing the panel.
+  function takeNotesLine(words, cursor, width) {
+    let { wordIndex, charOffset } = cursor;
+    let text = "";
+    while (wordIndex < words.length) {
+      const word = words[wordIndex].slice(charOffset);
+      const candidate = text ? `${text} ${word}` : word;
+      if (doc.getTextWidth(candidate) <= width) {
+        text = candidate;
+        wordIndex += 1;
+        charOffset = 0;
+        continue;
+      }
+      if (text) break;
+      const prefixLength = fitWordPrefixLength(word, width);
+      text = word.slice(0, prefixLength);
+      charOffset += prefixLength;
+      if (charOffset >= words[wordIndex].length) {
+        wordIndex += 1;
+        charOffset = 0;
+      }
+      break;
+    }
+    return { text, cursor: { ...cursor, wordIndex, charOffset } };
+  }
+
+  // Lays out one page's part of the panel from `top`. Lines beside the totals use the narrow
+  // left column; once a line clears `totalsBottom` the rest of the page uses the full width.
+  function planNotesSegment(units, metrics, cursor, top, totalsBottom) {
+    const { fontSize, lineHeight, ascent, descent } = metrics;
+    const bottomAllowance = descent + NOTES_PANEL_BOTTOM_PADDING;
+    const forceFirstLine = totalsBottom === null && top <= TERMS_BOX_PAGE_TOP;
+    const lines = [];
+    let position = { ...cursor };
+    let baseline = top + TERMS_BOX_HEADER_BAND_HEIGHT + NOTES_PANEL_BODY_TOP_GAP + ascent;
+    let wide = totalsBottom === null;
+    let topNarrow = !wide;
+    let stepY = null;
+
+    while (position.unitIndex < units.length) {
+      const unit = units[position.unitIndex];
+      const startsUnit = position.wordIndex === 0 && position.charOffset === 0;
+      let lineBaseline = baseline + (startsUnit && lines.length ? unit.gapBeforeLines * lineHeight : 0);
+
+      if (!wide && lineBaseline - ascent >= totalsBottom + NOTES_PANEL_STEP_CLEARANCE) {
+        wide = true;
+        if (lines.length) {
+          const lastBaseline = lines[lines.length - 1].baseline;
+          stepY = Math.max(totalsBottom + (NOTES_PANEL_STEP_CLEARANCE / 2), lastBaseline + descent + 1);
+          lineBaseline = Math.max(lineBaseline, stepY + 1 + ascent);
+        } else {
+          topNarrow = false;
+        }
       }
 
-      const availableBodyHeight = Math.max(lineHeight, footerSafeTopY - panelY - fixedHeight);
-      const lineCapacity = Math.max(1, Math.floor((availableBodyHeight + 0.001) / lineHeight));
-      const panelLines = safeLines.slice(lineIndex, lineIndex + lineCapacity);
-      const panelHeight = fixedHeight + (panelLines.length * lineHeight);
-      const renderedHeader = continued ? `${headerText} (CONTINUED)` : headerText;
+      const keepWithNextLines = unit.fontStyle === "bold" ? 2 : 0;
+      const requiredBottom = lineBaseline + (keepWithNextLines * lineHeight) + bottomAllowance;
+      if (requiredBottom > footerSafeTopY && !(forceFirstLine && !lines.length)) break;
 
+      applyPdfTextStyle("normal", fontSize);
+      const markerX = NOTES_TEXT_LEFT + (unit.marker ? NOTES_LIST_INDENT : 0);
+      const textX = unit.marker ? markerX + doc.getTextWidth(`${unit.marker} `) : NOTES_TEXT_LEFT;
+      const textRight = (wide ? NOTES_PANEL_RIGHT : NOTES_PANEL_NARROW_RIGHT) - TERMS_BOX_PADDING_X;
+      applyPdfTextStyle(unit.fontStyle, fontSize);
+      const taken = takeNotesLine(unit.words, position, textRight - textX);
+      lines.push({
+        baseline: lineBaseline,
+        fontStyle: unit.fontStyle,
+        marker: startsUnit ? unit.marker : "",
+        markerX,
+        text: taken.text,
+        x: textX,
+      });
+
+      position = taken.cursor;
+      if (position.wordIndex >= unit.words.length) {
+        position = { unitIndex: position.unitIndex + 1, wordIndex: 0, charOffset: 0 };
+      }
+      baseline = lineBaseline + lineHeight;
+    }
+
+    const bottom = lines.length
+      ? lines[lines.length - 1].baseline + bottomAllowance
+      : top + TERMS_BOX_HEADER_BAND_HEIGHT + NOTES_PANEL_BOTTOM_PADDING;
+    return { cursor: position, lines, top, bottom, topNarrow, stepY };
+  }
+
+  // Plans the whole panel: beside the totals first, then continuation pages at full width.
+  // A start that would strand the header with fewer than two lines moves to the next page.
+  function planNotesPanel(units, bodyFontSize, lineHeightFactor, startTop, totalsBottom) {
+    const metrics = {
+      fontSize: bodyFontSize,
+      lineHeight: (bodyFontSize * lineHeightFactor) / doc.internal.scaleFactor,
+      ascent: (bodyFontSize * 0.78) / doc.internal.scaleFactor,
+      descent: (bodyFontSize * 0.22) / doc.internal.scaleFactor,
+    };
+    const segments = [];
+    let cursor = { unitIndex: 0, wordIndex: 0, charOffset: 0 };
+    let pageOffset = 0;
+    let top = startTop;
+    let besideBottom = totalsBottom;
+
+    while (cursor.unitIndex < units.length) {
+      let segment = planNotesSegment(units, metrics, cursor, top, besideBottom);
+      const strandedStart = !segments.length
+        && segment.cursor.unitIndex < units.length
+        && segment.lines.length < 2;
+      if (strandedStart) {
+        pageOffset += 1;
+        segment = planNotesSegment(units, metrics, cursor, TERMS_BOX_PAGE_TOP, null);
+      }
+      segments.push({ ...segment, pageOffset });
+      cursor = segment.cursor;
+      pageOffset += 1;
+      top = TERMS_BOX_PAGE_TOP;
+      besideBottom = null;
+    }
+
+    return { segments, fontSize: bodyFontSize, lineHeightFactor };
+  }
+
+  function drawNotesPanel(plan, startPage, headerText) {
+    plan.segments.forEach((segment, segmentIndex) => {
+      const page = startPage + segment.pageOffset;
+      while (doc.getNumberOfPages() < page) doc.addPage();
+      doc.setPage(page);
+
+      const topRight = segment.topNarrow ? NOTES_PANEL_NARROW_RIGHT : NOTES_PANEL_RIGHT;
       doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
       doc.setLineWidth(BORDER_LINE_WIDTH);
-      doc.rect(TERMS_BOX_LEFT, panelY, panelWidth, panelHeight);
+      if (segment.stepY === null) {
+        doc.rect(TERMS_BOX_LEFT, segment.top, topRight - TERMS_BOX_LEFT, segment.bottom - segment.top);
+      } else {
+        // One outline: narrow beside the totals, stepping out to full width below them.
+        doc.lines([
+          [topRight - TERMS_BOX_LEFT, 0],
+          [0, segment.stepY - segment.top],
+          [NOTES_PANEL_RIGHT - topRight, 0],
+          [0, segment.bottom - segment.stepY],
+          [TERMS_BOX_LEFT - NOTES_PANEL_RIGHT, 0],
+        ], TERMS_BOX_LEFT, segment.top, [1, 1], "S", true);
+      }
       doc.line(
         TERMS_BOX_LEFT,
-        panelY + TERMS_BOX_HEADER_BAND_HEIGHT,
-        TERMS_BOX_LEFT + panelWidth,
-        panelY + TERMS_BOX_HEADER_BAND_HEIGHT
+        segment.top + TERMS_BOX_HEADER_BAND_HEIGHT,
+        topRight,
+        segment.top + TERMS_BOX_HEADER_BAND_HEIGHT
       );
 
       applyPdfTextStyle("bold", TERMS_HEADER_FONT_SIZE);
       doc.text(
-        renderedHeader,
-        TERMS_BOX_LEFT + TERMS_BOX_PADDING_X,
-        panelY + TERMS_BOX_TOP_PADDING + 2.0
+        segmentIndex ? `${headerText} (CONTINUED)` : headerText,
+        NOTES_TEXT_LEFT,
+        segment.top + TERMS_BOX_TOP_PADDING + 2.0
       );
 
-      applyPdfTextStyle("normal", bodyFontSize);
-      doc.text(
-        panelLines,
-        TERMS_BOX_LEFT + TERMS_BOX_PADDING_X,
-        panelY + bodyStartOffset,
-        { lineHeightFactor }
-      );
-
-      lineIndex += panelLines.length;
-      bottomY = panelY + panelHeight;
-      if (lineIndex < safeLines.length) {
-        doc.addPage();
-        page = doc.getNumberOfPages();
-        panelY = TERMS_BOX_PAGE_TOP;
-        continued = true;
+      for (const line of segment.lines) {
+        if (line.marker) {
+          applyPdfTextStyle("normal", plan.fontSize);
+          doc.text(line.marker, line.markerX, line.baseline);
+        }
+        applyPdfTextStyle(line.fontStyle, plan.fontSize);
+        if (line.text) doc.text(line.text, line.x, line.baseline);
       }
-    }
-
-    return { page, bottomY };
+    });
   }
 
   doc.setFont("helvetica", "bold");
@@ -1832,47 +1972,39 @@ export function buildPdfDoc(payload) {
     },
   });
 
-  const totalsFinalY = Number(doc.lastAutoTable?.finalY || 0);
+  const totalsTable = doc.lastAutoTable;
+  const totalsFinalY = Number(totalsTable?.finalY || 0);
+  const totalsTopY = totalsFinalY - ensureArray(totalsTable?.body).reduce((sum, row) => sum + Number(row?.height || 0), 0);
   const totalsFinalPage = doc.getNumberOfPages();
-  let invoiceCompanionPage = totalsFinalPage;
-  let invoiceCompanionBottomY = totalsFinalY;
 
-  if (payload?.docType === "estimate" && additionalNotesText) {
-    renderPaginatedTextPanel({
-      startPage: totalsFinalPage,
-      startY: totalsFinalY,
-      gap: ESTIMATE_NOTES_BOX_GAP,
-      headerText: ESTIMATE_NOTES_HEADER_TEXT,
-      text: additionalNotesText,
-      bodyFontSize: ESTIMATE_NOTES_BODY_FONT_SIZE,
-      lineHeightFactor: ESTIMATE_NOTES_LINE_HEIGHT_FACTOR,
-    });
+  // Invoice payment terms and user notes remain separate sources; only their presentation
+  // is combined into one Notes & Conditions panel. Estimates never receive invoice terms.
+  const isInvoice = payload?.docType === "invoice";
+  const notesPanelSections = [];
+  if (isInvoice && invoicePaymentTermsText) {
+    notesPanelSections.push({ title: TERMS_HEADER_TEXT, subheading: TERMS_SUBHEADING_TEXT, text: invoicePaymentTermsText });
+  }
+  if ((isInvoice || payload?.docType === "estimate") && additionalNotesText) {
+    notesPanelSections.push({ title: ADDITIONAL_NOTES_HEADER_TEXT, subheading: ADDITIONAL_NOTES_SUBHEADING_TEXT, text: additionalNotesText });
   }
 
-  if (payload?.docType === "invoice" && invoicePaymentTermsText) {
-    const termsResult = renderPaginatedTextPanel({
-      startPage: totalsFinalPage,
-      startY: totalsFinalY,
-      gap: TERMS_BOX_MIN_GAP,
-      headerText: TERMS_HEADER_TEXT,
-      text: invoicePaymentTermsText,
-      bodyFontSize: TERMS_BODY_FONT_SIZE,
-      lineHeightFactor: TERMS_LINE_HEIGHT_FACTOR,
-    });
-    invoiceCompanionPage = termsResult.page;
-    invoiceCompanionBottomY = termsResult.bottomY;
-  }
-
-  if (payload?.docType === "invoice" && additionalNotesText) {
-    renderPaginatedTextPanel({
-      startPage: invoicePaymentTermsText ? invoiceCompanionPage : totalsFinalPage,
-      startY: invoicePaymentTermsText ? invoiceCompanionBottomY : totalsFinalY,
-      gap: invoicePaymentTermsText ? INVOICE_NOTES_BOX_GAP : TERMS_BOX_MIN_GAP,
-      headerText: INVOICE_NOTES_HEADER_TEXT,
-      text: additionalNotesText,
-      bodyFontSize: TERMS_BODY_FONT_SIZE,
-      lineHeightFactor: TERMS_LINE_HEIGHT_FACTOR,
-    });
+  if (notesPanelSections.length) {
+    const notesPanelUnits = buildNotesPanelUnits(notesPanelSections);
+    const notesHeaderText = notesPanelSections.length > 1 ? NOTES_CONDITIONS_HEADER_TEXT : notesPanelSections[0].title;
+    const baseFontSize = isInvoice ? TERMS_BODY_FONT_SIZE : ESTIMATE_NOTES_BODY_FONT_SIZE;
+    const baseLineHeightFactor = isInvoice ? TERMS_LINE_HEIGHT_FACTOR : ESTIMATE_NOTES_LINE_HEIGHT_FACTOR;
+    // Slightly tighter settings are used only when they keep the whole panel on the totals
+    // page; otherwise the panel keeps its normal size and continues on the next page.
+    const candidateSettings = [
+      [baseFontSize, baseLineHeightFactor],
+      [Math.max(NOTES_MIN_BODY_FONT_SIZE, baseFontSize - 0.45), 1.14],
+      [NOTES_MIN_BODY_FONT_SIZE, 1.12],
+    ];
+    const plans = candidateSettings.map(([fontSize, lineHeightFactor]) => (
+      planNotesPanel(notesPanelUnits, fontSize, lineHeightFactor, totalsTopY, totalsFinalY)
+    ));
+    const notesPlan = plans.find((plan) => plan.segments.length === 1 && plan.segments[0].pageOffset === 0) || plans[0];
+    drawNotesPanel(notesPlan, totalsFinalPage, notesHeaderText);
   }
 
   const pageCount = doc.getNumberOfPages();
