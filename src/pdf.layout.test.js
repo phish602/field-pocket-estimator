@@ -120,6 +120,109 @@ function footerDividerY(doc, page) {
   return null;
 }
 
+// Every text run on a page in drawing order, with its position (mm from the page's top-left),
+// font size and font id; Td offsets accumulate within a BT block.
+function pageTextRuns(doc, page) {
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const runs = [];
+  for (const block of pageOperations(doc, page).matchAll(/BT([\s\S]*?)ET/g)) {
+    let x = 0;
+    let y = 0;
+    let fontId = "";
+    let fontSize = 0;
+    for (const op of block[1].matchAll(/\/(F\d+) ([\d.]+) Tf|(-?[\d.]+) (-?[\d.]+) Td|\(((?:\\.|[^\\)])*)\)\s*Tj/g)) {
+      if (op[1]) {
+        fontId = op[1];
+        fontSize = Number(op[2]);
+      } else if (op[3] !== undefined) {
+        x += Number(op[3]);
+        y += Number(op[4]);
+      } else {
+        runs.push({
+          text: op[5].replace(/\\(.)/g, "$1"),
+          x: x / PT_PER_MM,
+          y: pageHeight - (y / PT_PER_MM),
+          fontId,
+          fontSize,
+        });
+      }
+    }
+  }
+  return runs;
+}
+
+function documentTextRuns(doc) {
+  const runs = [];
+  for (let page = 1; page <= doc.getNumberOfPages(); page += 1) {
+    runs.push(...pageTextRuns(doc, page).map((run) => ({ ...run, page })));
+  }
+  return runs;
+}
+
+const INVOICE_NOTES_FONT_SIZE = 9.85;
+const ESTIMATE_NOTES_FONT_SIZE = 9.4;
+const NOTES_MIN_FONT_SIZE = 8.8;
+const NOTES_TEXT_LEFT = 19.2;
+const TOTALS_LEFT = 117.5;
+const NOTES_WIDE_TEXT_RIGHT = 194 - 3.2;
+
+function runWidth(doc, run) {
+  const bold = run.fontId === doc.internal.getFont("helvetica", "bold").id;
+  doc.setFont("helvetica", bold ? "bold" : "normal");
+  return (doc.getStringUnitWidth(run.text) * run.fontSize) / doc.internal.scaleFactor;
+}
+
+const NOTES_PANEL_HEADER_PATTERN = /^(ADDITIONAL NOTES|TERMS & CONDITIONS|NOTES & CONDITIONS)/;
+
+// Body font size the panel was drawn at: the first regular-weight run after its header.
+function notesPanelFontSize(doc) {
+  const runs = documentTextRuns(doc);
+  const normalFontId = doc.internal.getFont("helvetica", "normal").id;
+  const headerIndex = runs.findIndex((run) => NOTES_PANEL_HEADER_PATTERN.test(run.text));
+  if (headerIndex < 0) return null;
+  return runs.slice(headerIndex + 1).find((run) => run.fontId === normalFontId)?.fontSize ?? null;
+}
+
+// The panel's text, in reading order across pages, must contain the source text exactly
+// (ignoring whitespace, since wrapping replaces spaces with line breaks).
+function expectNotesPanelText(doc, sourceText) {
+  const fontSize = notesPanelFontSize(doc);
+  const panelText = documentTextRuns(doc)
+    .filter((run) => run.fontSize === fontSize)
+    .map((run) => run.text)
+    .join("");
+  expect(panelText.replace(/\s+/g, "")).toContain(normalizePdfText(sourceText).replace(/\s+/g, ""));
+}
+
+// Regular-weight runs at the notes body size (section titles at the same size are bold).
+function notesBodyRuns(doc, runs, fontSize) {
+  const normalFontId = doc.internal.getFont("helvetica", "normal").id;
+  return runs.filter((run) => run.fontSize === fontSize && run.fontId === normalFontId);
+}
+
+// Panel lines stay inside the panel, clear of the totals beside them and above the footer.
+function expectNotesPanelBounds(doc) {
+  const fontSize = notesPanelFontSize(doc);
+  expect(fontSize).toBeGreaterThanOrEqual(NOTES_MIN_FONT_SIZE);
+  const totals = doc.lastAutoTable;
+  const totalsTop = totals.finalY - totals.body.reduce((sum, row) => sum + row.height, 0);
+  const descent = (fontSize * 0.22) / doc.internal.scaleFactor;
+  const ascent = (fontSize * 0.78) / doc.internal.scaleFactor;
+  const panelRuns = notesBodyRuns(doc, documentTextRuns(doc), fontSize);
+
+  expect(panelRuns.length).toBeGreaterThan(0);
+  for (const run of panelRuns) {
+    const right = run.x + runWidth(doc, run);
+    expect(run.x).toBeGreaterThanOrEqual(NOTES_TEXT_LEFT - 0.01);
+    expect(right).toBeLessThanOrEqual(NOTES_WIDE_TEXT_RIGHT + 0.05);
+    expect(run.y + descent).toBeLessThanOrEqual(ONE_LINE_FOOTER_CONTENT_LIMIT_Y);
+    const besideTotals = run.page === totals.startPageNumber
+      && run.y + descent > totalsTop
+      && run.y - ascent < totals.finalY;
+    if (besideTotals) expect(right).toBeLessThan(TOTALS_LEFT);
+  }
+}
+
 function expectDocumentText(doc, ...values) {
   const text = documentText(doc);
   for (const value of values) expect(text).toContain(value);
@@ -485,7 +588,7 @@ describe("page-space utilization", () => {
       additionalNotes: "This estimate is valid for 30 days. FINAL EST-0001 NOTES MARKER.",
     }));
 
-    expectPdfText(
+    expectDocumentText(
       doc,
       "Scope of Work",
       "Power will be interrupted",
@@ -509,21 +612,28 @@ describe("page-space utilization", () => {
     expect(pdfOperations(doc)).not.toContain("TERMS & CONDITIONS");
   });
 
-  test("keeps the Additional Notes header with its first lines across a page break", () => {
-    // Leaves room under the totals for the notes header plus one line, but not two.
-    const materialRows = materialRowsOfCount(15);
-    materialRows[0] = { ...materialRows[0], note: "Field verify." };
-    const doc = buildPdfDoc(basePayload({
-      company: FULL_COMPANY,
-      materialRows,
-      summaryRows: [["Grand Total", "$10.00"]],
-      additionalNotes: `${"Estimate notes that cannot fit beside the totals. ".repeat(8)}FINAL ORPHAN NOTES MARKER.`,
-    }));
+  test("never strands the Additional Notes header without at least two lines of notes", () => {
+    const notes = `${"Estimate notes that may not fit beside the totals. ".repeat(8)}FINAL ORPHAN NOTES MARKER.`;
+    for (let count = 1; count <= 30; count += 1) {
+      const materialRows = materialRowsOfCount(count);
+      materialRows[0] = { ...materialRows[0], note: "Field verify." };
+      const doc = buildPdfDoc(basePayload({
+        company: FULL_COMPANY,
+        materialRows,
+        summaryRows: [["Grand Total", "$10.00"]],
+        additionalNotes: notes,
+      }));
 
-    expect(doc.getNumberOfPages()).toBe(2);
-    expect(pageOperations(doc, 1)).not.toContain("ADDITIONAL NOTES");
-    expect(pageOperations(doc, 2)).toContain("ADDITIONAL NOTES");
-    expectDocumentText(doc, "FINAL ORPHAN NOTES MARKER");
+      for (let page = 1; page <= doc.getNumberOfPages(); page += 1) {
+        const runs = pageTextRuns(doc, page);
+        const header = runs.find((run) => run.text.startsWith("ADDITIONAL NOTES"));
+        if (!header) continue;
+        const bodyLines = notesBodyRuns(doc, runs, notesPanelFontSize(doc)).filter((run) => run.y > header.y);
+        expect(bodyLines.length).toBeGreaterThanOrEqual(2);
+      }
+      expectNotesPanelText(doc, notes);
+      expectNotesPanelBounds(doc);
+    }
   });
 });
 
@@ -557,25 +667,35 @@ describe("invoice Terms & Conditions and Additional Notes", () => {
     expectFooterOnEveryPage(doc, "Valenzuela Electric & Plumbing");
   });
 
-  test("renders Terms & Conditions and Additional Notes as separate sections in order", () => {
+  test("combines Terms & Conditions and Additional Notes into one panel, in order, without duplicates", () => {
     const doc = buildPdfDoc(shortInvoice({
       customer: { name: "Notes Customer", netTermsDays: 30 },
       additionalNotes: "Gate code 4411. FINAL SEPARATE NOTES MARKER.",
     }));
-    const operations = pdfOperations(doc);
+    const text = documentText(doc);
+    const termsSentence = "Payment Terms: Full payment is due within 30 days of receipt of this invoice, unless otherwise agreed to in writing.";
 
     expect(doc.getNumberOfPages()).toBe(1);
-    expect(countOccurrences(operations, "TERMS & CONDITIONS")).toBe(1);
-    expect(countOccurrences(operations, "ADDITIONAL NOTES")).toBe(1);
-    expect(operations.indexOf("TERMS & CONDITIONS")).toBeLessThan(operations.indexOf("ADDITIONAL NOTES"));
-    expectPdfText(doc, "30 days", "FINAL SEPARATE NOTES MARKER");
+    expect(countOccurrences(text, "NOTES & CONDITIONS")).toBe(1);
+    expect(countOccurrences(text, "Terms & Conditions")).toBe(1);
+    expect(countOccurrences(text, "Additional Notes")).toBe(1);
+    expect(text).not.toContain("TERMS & CONDITIONS");
+    expect(text).not.toContain("ADDITIONAL NOTES");
+    expect(countOccurrences(text.replace(/\s+/g, ""), termsSentence.replace(/\s+/g, ""))).toBe(1);
+    expect(countOccurrences(text, "FINAL SEPARATE NOTES MARKER")).toBe(1);
+    const order = ["NOTES & CONDITIONS", "Terms & Conditions", "Payment Terms:", "Additional Notes", "Gate code 4411"];
+    const positions = order.map((value) => text.indexOf(value));
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
 
   test("renders Terms & Conditions without an empty Additional Notes section", () => {
     const doc = buildPdfDoc(shortInvoice({ customer: { name: "No Notes Customer", netTermsDays: 30 } }));
+    const text = documentText(doc);
 
-    expect(pdfOperations(doc)).toContain("TERMS & CONDITIONS");
-    expect(pdfOperations(doc)).not.toContain("ADDITIONAL NOTES");
+    expect(text).toContain("TERMS & CONDITIONS");
+    expect(text).not.toContain("NOTES & CONDITIONS");
+    expect(text).not.toContain("Additional Notes");
+    expect(text).not.toContain("ADDITIONAL NOTES");
   });
 
   test("lays out direct and converted short invoices identically", () => {
@@ -600,7 +720,226 @@ describe("invoice Terms & Conditions and Additional Notes", () => {
     }));
 
     expect(doc.getNumberOfPages()).toBeGreaterThan(1);
-    expectDocumentText(doc, "15 days", "ADDITIONAL NOTES (CONTINUED)", "FINAL EXTENSIVE INVOICE NOTES MARKER");
+    expectDocumentText(doc, "15 days", "NOTES & CONDITIONS (CONTINUED)", "FINAL EXTENSIVE INVOICE NOTES MARKER");
     expectFooterOnEveryPage(doc, "Valenzuela Electric & Plumbing");
+  });
+});
+
+describe("adaptive Notes & Conditions layout", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  const EST0001_MATERIALS = [
+    { desc: "200A main breaker load center, 40-space", note: "Indoor rated, copper bus.", qty: "1", each: "$385.00", total: "$385.00" },
+    { desc: "4/0 aluminum SER service entrance cable", note: "Sold per foot.", qty: "35", each: "$6.40", total: "$224.00" },
+    { desc: "Ground rod, 5/8 in x 8 ft copper-clad", note: "Two rods spaced 6 ft apart.", qty: "2", each: "$24.50", total: "$49.00" },
+    { desc: "#4 bare copper grounding electrode conductor", note: "", qty: "25", each: "$3.10", total: "$77.50" },
+    { desc: "Breaker, 20A single-pole", note: "Replaces damaged breakers.", qty: "6", each: "$11.25", total: "$67.50" },
+    { desc: "Meter base, 200A ringless", note: "Utility approved.", qty: "1", each: "$142.00", total: "$142.00" },
+  ];
+  const EST0001_SUMMARY = [
+    ["Labor", "$1,560.00"],
+    ["Materials", "$945.00"],
+    ["Subtotal", "$2,505.00"],
+    ["Grand Total", "$2,505.00"],
+  ];
+  const EST0001_SCOPE = [
+    "## Scope of Work",
+    "Provide all labor, materials, and equipment required to replace the existing 100A main service panel with a new 200A panel, upgrade the service entrance conductors, and correct the grounding system per current NEC requirements.",
+    "- Coordinate utility disconnect and reconnect with the serving utility.",
+    "- Remove and dispose of the existing main panel and service entrance cable.",
+    "- Install new 200A main breaker panel and transfer all existing branch circuits.",
+    "- Install new grounding electrode conductor and two ground rods.",
+    "- Label all circuits and provide an updated panel directory.",
+    "- Obtain permit and schedule final inspection with the city.",
+    "Work will be performed during normal business hours. Power will be interrupted for approximately four to six hours on the day of the changeover.",
+  ].join("\n");
+  const EST0001_NOTES = "This estimate is valid for 30 days from the date above. Any additional work discovered after the existing panel is opened, including damaged branch wiring or code corrections not listed above, will be quoted separately before proceeding. A 50% deposit is required to schedule the work.";
+
+  function est0001(overrides = {}) {
+    return basePayload({
+      documentNumber: "EST-0001",
+      company: FULL_COMPANY,
+      laborRows: [["Journeyman Electrician", "2", "12", "$65.00", "$1,560.00"]],
+      materialRows: EST0001_MATERIALS,
+      summaryRows: EST0001_SUMMARY,
+      scopeNotes: EST0001_SCOPE,
+      additionalNotes: EST0001_NOTES,
+      ...overrides,
+    });
+  }
+
+  function totalsTop(doc) {
+    const totals = doc.lastAutoTable;
+    return totals.finalY - totals.body.reduce((sum, row) => sum + row.height, 0);
+  }
+
+  function panelHeader(doc) {
+    return documentTextRuns(doc).find((run) => NOTES_PANEL_HEADER_PATTERN.test(run.text));
+  }
+
+  test("places estimate notes beside the totals so a short estimate stays on one page", () => {
+    const doc = buildPdfDoc(est0001({
+      scopeNotes: "## Scope of Work\nReplace two exterior GFCI receptacles and add weatherproof in-use covers.",
+      materialRows: EST0001_MATERIALS.slice(0, 3),
+    }));
+    const header = panelHeader(doc);
+
+    expect(doc.getNumberOfPages()).toBe(1);
+    expect(header.text).toBe("ADDITIONAL NOTES");
+    expect(header.page).toBe(doc.lastAutoTable.startPageNumber);
+    expect(header.y).toBeGreaterThan(totalsTop(doc));
+    expect(header.y).toBeLessThan(totalsTop(doc) + 6);
+    expect(notesPanelFontSize(doc)).toBe(ESTIMATE_NOTES_FONT_SIZE);
+    expectNotesPanelText(doc, EST0001_NOTES);
+    expectNotesPanelBounds(doc);
+    expect(documentText(doc)).not.toContain("Payment Terms");
+  });
+
+  test("EST-0001: notes now share the totals page beside the totals instead of following below them", () => {
+    // Totals (43.9mm) cannot fit after the six materials on page 1, so the document stays
+    // two pages; the notes no longer add their own block below the totals on page 2.
+    const doc = buildPdfDoc(est0001());
+    const header = panelHeader(doc);
+
+    expect(doc.getNumberOfPages()).toBe(2);
+    expect(doc.lastAutoTable.startPageNumber).toBe(2);
+    expect(header.page).toBe(2);
+    expect(header.y).toBeLessThan(doc.lastAutoTable.finalY);
+    expectNotesPanelText(doc, EST0001_NOTES);
+    expectNotesPanelBounds(doc);
+  });
+
+  test("flows long notes from beside the totals to the full width below them before adding a page", () => {
+    const notes = `${"Coordinate site access, parking, and staging with the property manager before each phase. ".repeat(12)}FINAL FLOW MARKER.`;
+    const doc = buildPdfDoc(est0001({ materialRows: EST0001_MATERIALS.slice(0, 2), scopeNotes: "", additionalNotes: notes }));
+    const totals = doc.lastAutoTable;
+    const bodyRuns = notesBodyRuns(doc, documentTextRuns(doc), notesPanelFontSize(doc))
+      .filter((run) => run.page === totals.startPageNumber);
+    const wideRuns = bodyRuns.filter((run) => run.x + runWidth(doc, run) > TOTALS_LEFT);
+
+    expect(doc.getNumberOfPages()).toBe(1);
+    expect(bodyRuns.some((run) => run.y < totals.finalY)).toBe(true);
+    expect(wideRuns.length).toBeGreaterThan(0);
+    for (const run of wideRuns) expect(run.y).toBeGreaterThan(totals.finalY);
+    expectNotesPanelText(doc, notes);
+    expectNotesPanelBounds(doc);
+  });
+
+  test("wraps long URLs and unbroken strings inside the panel without losing characters", () => {
+    const notes = [
+      "Reference: https://example.com/projects/2026/glenrosa-service-upgrade/drawings/E-101-rev-C-final-approved.pdf?download=1&version=3",
+      "",
+      `Unbroken: ${"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".repeat(4)}.`,
+      "",
+      "Spec 26-05-19-LOW-VOLTAGE-ELECTRICAL-POWER-CONDUCTORS-AND-CABLES applies. FINAL URL MARKER.",
+    ].join("\n");
+    const doc = buildPdfDoc(basePayload({
+      docType: "invoice",
+      documentNumber: "INV-5001",
+      company: FULL_COMPANY,
+      customer: { name: "URL Customer", netTermsDays: 30 },
+      additionalNotes: notes,
+    }));
+
+    expectNotesPanelText(doc, notes);
+    expectNotesPanelBounds(doc);
+  });
+
+  test("keeps bullet and numbered markers with a hanging indent for wrapped items", () => {
+    const doc = buildPdfDoc(est0001({
+      materialRows: EST0001_MATERIALS.slice(0, 2),
+      scopeNotes: "",
+      additionalNotes: [
+        "Included:",
+        "- Permit fees and one re-inspection if required by the city, including any resubmittal paperwork.",
+        "- Haul-away of removed equipment.",
+        "1. Deposit due at scheduling.",
+        "2. Balance due at final inspection.",
+      ].join("\n"),
+    }));
+    const runs = notesBodyRuns(doc, documentTextRuns(doc), notesPanelFontSize(doc));
+    const markers = runs.filter((run) => ["-", "1.", "2."].includes(run.text));
+    const firstItem = runs.find((run) => run.text.startsWith("Permit fees"));
+    const continuation = runs[runs.indexOf(firstItem) + 1];
+
+    expect(markers.map((run) => run.text)).toEqual(["-", "-", "1.", "2."]);
+    for (const marker of markers) expect(marker.x).toBeCloseTo(NOTES_TEXT_LEFT + 2.8, 1);
+    expect(firstItem.y).toBeCloseTo(markers[0].y, 3);
+    expect(firstItem.x).toBeGreaterThan(markers[0].x);
+    expect(continuation.y).toBeGreaterThan(firstItem.y);
+    expect(continuation.x).toBeCloseTo(firstItem.x, 3);
+  });
+
+  test("keeps paragraph breaks as visible extra spacing", () => {
+    const doc = buildPdfDoc(est0001({
+      materialRows: EST0001_MATERIALS.slice(0, 2),
+      scopeNotes: "",
+      additionalNotes: "First paragraph.\n\nSecond paragraph.",
+    }));
+    const runs = notesBodyRuns(doc, documentTextRuns(doc), notesPanelFontSize(doc));
+    const first = runs.find((run) => run.text === "First paragraph.");
+    const second = runs.find((run) => run.text === "Second paragraph.");
+    const lineHeight = (ESTIMATE_NOTES_FONT_SIZE * 1.18) / doc.internal.scaleFactor;
+
+    expect(second.y - first.y).toBeGreaterThan(lineHeight * 1.4);
+  });
+
+  test("never moves or changes the totals when notes are added", () => {
+    for (const docType of ["estimate", "invoice"]) {
+      const payload = est0001({ docType, materialRows: EST0001_MATERIALS.slice(0, 3), customer: { name: "Totals Customer", netTermsDays: 30 } });
+      const withNotes = buildPdfDoc(payload);
+      const withNotesTotals = { finalY: withNotes.lastAutoTable.finalY, page: withNotes.lastAutoTable.startPageNumber };
+      const withoutNotes = buildPdfDoc({ ...payload, additionalNotes: "" });
+      const totalsRuns = (doc) => documentTextRuns(doc)
+        .filter((run) => run.fontSize === 10)
+        .map(({ text, x, y, page }) => ({ text, x: x.toFixed(2), y: y.toFixed(2), page }));
+
+      expect(withNotesTotals).toEqual({ finalY: withoutNotes.lastAutoTable.finalY, page: withoutNotes.lastAutoTable.startPageNumber });
+      expect(totalsRuns(withNotes)).toEqual(totalsRuns(withoutNotes));
+      expectDocumentText(withNotes, "Grand Total", "$2,505.00", "$1,560.00", "$945.00");
+    }
+  });
+
+  test("paginates substantial scope and materials naturally with the panel beside the totals", () => {
+    const doc = buildPdfDoc(est0001({
+      docType: "invoice",
+      documentNumber: "INV-5002",
+      includeInvoiceScopeOnPdf: true,
+      materialRows: [...EST0001_MATERIALS, ...EST0001_MATERIALS, ...EST0001_MATERIALS.slice(0, 4)],
+      customer: { name: "Scope Invoice Customer", netTermsDays: 30 },
+    }));
+    const header = panelHeader(doc);
+
+    expect(doc.getNumberOfPages()).toBe(2);
+    expect(doc.lastAutoTable.pageNumber).toBe(1);
+    expect(header.text).toBe("NOTES & CONDITIONS");
+    expect(header.page).toBe(doc.lastAutoTable.startPageNumber);
+    expectNotesPanelText(doc, EST0001_NOTES);
+    expectNotesPanelBounds(doc);
+    expectFooterOnEveryPage(doc, "Valenzuela Electric & Plumbing");
+  });
+
+  test("uses tighter type only to keep the panel on the totals page, never below the readable minimum", () => {
+    const results = [];
+    for (let sentences = 1; sentences <= 40; sentences += 1) {
+      const notes = `${"Coordinate access with the site representative before work. ".repeat(sentences)}FINAL SWEEP MARKER.`;
+      const doc = buildPdfDoc(basePayload({
+        docType: "invoice",
+        documentNumber: "INV-5003",
+        company: FULL_COMPANY,
+        customer: { name: "Sweep Customer", netTermsDays: 30 },
+        additionalNotes: notes,
+      }));
+      results.push({ fontSize: notesPanelFontSize(doc), pages: doc.getNumberOfPages() });
+      expectNotesPanelText(doc, notes);
+      expectNotesPanelBounds(doc);
+    }
+    const tightened = results.filter((result) => result.fontSize < INVOICE_NOTES_FONT_SIZE);
+    expect(tightened.length).toBeGreaterThan(0);
+    expect(tightened.every((result) => result.pages === 1)).toBe(true);
+    expect(results.filter((result) => result.pages > 1).every((result) => result.fontSize === INVOICE_NOTES_FONT_SIZE)).toBe(true);
+    expect(Math.min(...results.map((result) => result.fontSize))).toBeGreaterThanOrEqual(NOTES_MIN_FONT_SIZE);
   });
 });
