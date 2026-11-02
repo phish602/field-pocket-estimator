@@ -94,6 +94,32 @@ function expectFooterOnEveryPage(doc, ...footerValues) {
   }
 }
 
+const PT_PER_MM = 72 / 25.4;
+
+// Baseline (mm from the page top) of the first text run on a page that contains value.
+// Td offsets accumulate within a BT block, which is how wrapped lines are positioned.
+function textBaselineY(doc, page, value) {
+  const pageHeight = doc.internal.pageSize.getHeight();
+  for (const block of pageOperations(doc, page).matchAll(/BT([\s\S]*?)ET/g)) {
+    let y = 0;
+    for (const match of block[1].matchAll(/(-?[\d.]+) (-?[\d.]+) Td\s*\(((?:\\.|[^\\)])*)\)\s*Tj/g)) {
+      y += Number(match[2]);
+      if (match[3].replace(/\\(.)/g, "$1").includes(value)) return pageHeight - (y / PT_PER_MM);
+    }
+  }
+  return null;
+}
+
+// Y (mm from the page top) of the footer divider, which spans 26mm to 184mm.
+function footerDividerY(doc, page) {
+  const pageHeight = doc.internal.pageSize.getHeight();
+  for (const match of pageOperations(doc, page).matchAll(/([\d.]+) ([\d.]+) m\s*([\d.]+) ([\d.]+) l/g)) {
+    const [x1, y1, x2, y2] = match.slice(1).map((value) => Number(value) / PT_PER_MM);
+    if (Math.abs(x1 - 26) < 0.1 && Math.abs(x2 - 184) < 0.1 && Math.abs(y1 - y2) < 0.01) return pageHeight - y1;
+  }
+  return null;
+}
+
 function expectDocumentText(doc, ...values) {
   const text = documentText(doc);
   for (const value of values) expect(text).toContain(value);
@@ -341,6 +367,45 @@ describe("company footer on every page", () => {
       expect(operations).toContain("Contractors LLC");
       expect(operations).toContain("Scottsdale, AZ 85254");
     }
+  });
+
+  test.each([
+    ["estimate", "EST-3002", {}],
+    ["invoice", "INV-3002", { netTermsDays: 30 }],
+  ])("seats the %s footer band in the bottom margin at the same position on every page", (docType, documentNumber, customerTerms) => {
+    const doc = buildPdfDoc(basePayload({
+      docType,
+      documentNumber,
+      company: FULL_COMPANY,
+      customer: { name: "Footer Band Customer", ...customerTerms },
+      materialRows: materialRowsOfCount(40),
+    }));
+    const pageCount = doc.getNumberOfPages();
+
+    expect(pageCount).toBeGreaterThan(1);
+    for (let page = 1; page <= pageCount; page += 1) {
+      expect(textBaselineY(doc, page, `Page ${page} of ${pageCount}`)).toBeCloseTo(284.8, 1);
+      expect(textBaselineY(doc, page, "Created with EstiPaid")).toBeCloseTo(284.8, 1);
+      expect(textBaselineY(doc, page, "4120 E Camelback Rd")).toBeCloseTo(278.8, 1);
+      expect(textBaselineY(doc, page, "Valenzuela Electric & Plumbing")).toBeCloseTo(271.7, 1);
+      expect(footerDividerY(doc, page)).toBeCloseTo(266.3, 1);
+      expect(footerDividerY(doc, page)).toBeGreaterThan(ONE_LINE_FOOTER_CONTENT_LIMIT_Y);
+    }
+  });
+
+  test("keeps a wrapped footer anchored to the same bottom line, growing upward", () => {
+    const doc = buildPdfDoc(basePayload({
+      company: {
+        companyName: "Southwest Regional Commercial & Residential Electrical, Plumbing, and Mechanical Contractors LLC",
+        phone: "602-555-0199",
+        addressLines: ["Building C, 12500 North Scottsdale Road Commerce Park, Suite 1450 East Wing", "Scottsdale, AZ 85254"],
+      },
+    }));
+
+    expect(textBaselineY(doc, 1, "Scottsdale, AZ 85254")).toBeCloseTo(278.8, 1);
+    expect(textBaselineY(doc, 1, "Southwest Regional")).toBeLessThan(271.7);
+    expect(footerDividerY(doc, 1)).toBeLessThan(textBaselineY(doc, 1, "Southwest Regional"));
+    expect(doc.lastAutoTable.finalY).toBeLessThan(footerDividerY(doc, 1));
   });
 
   test("renders phone and address once when the company name is missing", () => {
